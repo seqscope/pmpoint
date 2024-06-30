@@ -20,14 +20,14 @@ namespace pmt_utils
 
         pmt_pt_t() : global_x(0), global_y(0), zoom(0), tile_x(0), tile_y(0), local_x(0), local_y(0) {}
 
-        void set_global_coord(double _gx, double _gy, uint8_t _zoom);
+        void set_global_coord(uint8_t _zoom, double _gx, double _gy);
         void set_tile_coord(uint8_t _zoom, int64_t _tx, int64_t _ty, int32_t _lx = 0, double _ly = 0);
 
         pmt_pt_t(uint8_t _zoom, double _gx, double _gy)
         {
-            set_global_coord(_gx, _gy, _zoom);
+            set_global_coord(_zoom, _gx, _gy);
         }
-        pmt_pt_t(uint8_t _zoom, int64_t _tx, int64_t _ty, double _lx = 0, double _ly = 0)
+        pmt_pt_t(uint8_t _zoom, int64_t _tx, int64_t _ty, double _lx, double _ly)
         {
             set_tile_coord(_zoom, _tx, _ty, _lx, _ly);
         }
@@ -46,6 +46,8 @@ namespace pmt_utils
     }
     void epsg3857totile(double ix, double iy, uint8_t zoom, int64_t *x, int64_t *y);
     void tiletoepsg3857(int64_t ix, int64_t iy, uint8_t zoom, double *ox, double *oy);
+    void epsg3857totilecoord(double ix, double iy, uint8_t zoom, int64_t *tx, int64_t *ty, double *lx, double *ly);
+    void tilecoordtoespg3857(int64_t tx, int64_t ty, double lx, double ly, uint8_t zoom, double *ox, double* oy);
 };
 
 #endif // __PMT_UTILS_H

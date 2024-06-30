@@ -60,7 +60,6 @@ int32_t cmd_summarize_pmtiles(int32_t argc, char** argv) {
   if ( show_hdr ) 
     pmt.print_header_info(stdout);
   if ( show_meta ) {
-    // pmt.read_metadata();
     pmt.print_metadata(stdout);
   }
   if ( show_tile ) 

@@ -64,6 +64,10 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
         return false;
     }
 
+    uint64_t npass = 0, nskip = 0;
+    double scale_factor = pmt_utils::epsg3857_scale_factor(zoom);
+    double offset_x, offset_y;
+    pmt_utils::tiletoepsg3857(tile_x, tile_y, zoom, &offset_x, &offset_y);
     for (auto const &name : p_tile->layerNames())
     {
         const mapbox::vector_tile::layer layer = p_tile->getLayer(name);
@@ -87,29 +91,36 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
                     error("Only single point per feature is supported in decode_points()");
                 }
 
-                pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, geom[0][0].x, geom[0][0].y);
+                pmt_utils::pmt_pt_t pt(zoom, offset_x + scale_factor * geom[0][0].x, offset_y - scale_factor * geom[0][0].y);
+                //pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, geom[0][0].x/scale_factor, geom[0][0].y/scale_factor);
+                //pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, 0, 0);
+                //notice("Processing point (%.3f %.3f) at z=%u, (%llu, %llu), (%.3f, %.3f)", pt.global_x, pt.global_y, pt.zoom, pt.tile_x, pt.tile_y, pt.local_x, pt.local_y);
 
                 // check the filtering criteria
                 if (p_min_pt != NULL)
                 {
+                    //notice("(%.3f %.3f) > (%.3f %.3f)", pt.global_x, pt.global_y, p_min_pt->global_x, p_min_pt->global_y);
                     if (pt.global_x < p_min_pt->global_x || pt.global_y < p_min_pt->global_y)
                     {
+                        ++nskip;
                         continue;
                     }
                 }
                 if (p_max_pt != NULL)
                 {
+                    //notice("(%.3f %.3f) < (%.3f %.3f)", pt.global_x, pt.global_y, p_max_pt->global_x, p_max_pt->global_y);
                     if (pt.global_x > p_max_pt->global_x || pt.global_y > p_max_pt->global_y)
                     {
+                        ++nskip;
                         continue;
                     }
                 }
                 if (polygons.size() > 0)
                 {
                     bool found = false;
-                    for (auto &polygon : polygons)
+                    for (auto &p_polygon : polygons)
                     {
-                        if (polygon.contains_point(pt.global_x, pt.global_y))
+                        if (p_polygon->contains_point(pt.global_x, pt.global_y))
                         {
                             found = true;
                             break;
@@ -117,9 +128,12 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
                     }
                     if (!found)
                     {
+                        ++nskip;
                         continue;
                     }
                 }
+
+                ++npass;
 
                 p_df->points.push_back(pt);
 
@@ -134,6 +148,7 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
                     ++j;
                 }
             }
+            //notice("npass = %llu, nskip = %llu", npass, nskip);
         }
     }
 

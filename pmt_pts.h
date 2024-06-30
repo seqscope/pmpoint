@@ -4,7 +4,8 @@
 #include "ext/PMTiles/pmtiles.hpp"
 #include "ext/nlohmann/json.hpp"
 
-// A class for handling a PMTiles file that contains a collection of points
+// A class for handling a PMTiles file that contains a collection of points in MVT format
+// Each point may have multiple attributes, so the data can be reformatted in rectangular dataframe
 // This implementation relies on the PMTiles v3 specification
 
 class pmt_pts

@@ -15,6 +15,41 @@ struct _point_t
 };
 typedef struct _point_t point_t;
 
+class Rectangle
+{
+public:
+    point_t p_min, p_max;
+
+    Rectangle(double xmin, double ymin, double xmax, double ymax) : p_min(xmin, ymin), p_max(xmax, ymax) {}
+
+    inline void add_point(double x, double y) {
+        if (x < p_min.x) p_min.x = x;
+        if (x > p_max.x) p_max.x = x;
+        if (y < p_min.y) p_min.y = y;
+        if (y > p_max.y) p_max.y = y;
+    }
+
+    inline bool contains_point(double x, double y) const
+    {
+        return (x >= p_min.x && x <= p_max.x && y >= p_min.y && y <= p_max.y);
+    }
+
+    inline bool contains_point(const point_t &p) const
+    {
+        return contains_point(p.x, p.y);
+    }
+
+    inline bool contains_rectangle(const Rectangle &r) const
+    {
+        return (contains_point(r.p_min) && contains_point(r.p_max));
+    }
+
+    inline bool intersects_rectangle(const Rectangle &r) const
+    {
+        return (contains_point(r.p_min) || contains_point(r.p_max) || r.contains_point(p_min) || r.contains_point(p_max));
+    }
+};
+
 class Polygon
 {
 public:
@@ -45,6 +80,26 @@ public:
     inline bool contains_point(const point_t &p)
     {
         return contains_point(p.x, p.y);
+    }
+
+    Rectangle get_bounding_box()
+    {
+        double xmin = std::numeric_limits<double>::max();
+        double ymin = std::numeric_limits<double>::max();
+        double xmax = std::numeric_limits<double>::min();
+        double ymax = std::numeric_limits<double>::min();
+        for (auto &vertex : vertices)
+        {
+            if (vertex.x < xmin)
+                xmin = vertex.x;
+            if (vertex.x > xmax)
+                xmax = vertex.x;
+            if (vertex.y < ymin)
+                ymin = vertex.y;
+            if (vertex.y > ymax)
+                ymax = vertex.y;
+        }
+        return Rectangle(xmin, ymin, xmax, ymax);
     }
 };
 

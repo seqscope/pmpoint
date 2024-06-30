@@ -46,7 +46,7 @@ public:
 class mvt_pts_filt
 {
 public:
-    std::vector<Polygon> polygons;
+    std::vector<Polygon*> polygons;
     pmt_utils::pmt_pt_t *p_min_pt = NULL;
     pmt_utils::pmt_pt_t *p_max_pt = NULL;
     mapbox::vector_tile::buffer *p_tile = NULL;
@@ -62,15 +62,16 @@ public:
     inline void set_df(pt_dataframe *p) { p_df = p; }
     inline void set_min_filt(pmt_utils::pmt_pt_t *_min_pt) { p_min_pt = _min_pt; }
     inline void set_max_filt(pmt_utils::pmt_pt_t *_max_pt) { p_max_pt = _max_pt; }
-    inline void set_geojson_polygon_filt(const char *jsonf)
-    {
-        int32_t npolygons = load_polygons_from_geojson(jsonf, polygons);
-        if (npolygons == 0)
-        {
-            error("No polygons are loaded from %s", jsonf);
-        }
-        notice("Finished loading %zu polygons", polygons.size());
-    }
+    inline void set_polygon_filt(std::vector<Polygon*> &_polygons) { polygons = _polygons; }
+    // inline void set_geojson_polygon_filt(const char *jsonf)
+    // {
+    //     int32_t npolygons = load_polygons_from_geojson(jsonf, polygons);
+    //     if (npolygons == 0)
+    //     {
+    //         error("No polygons are loaded from %s", jsonf);
+    //     }
+    //     notice("Finished loading %zu polygons", polygons.size());
+    // }
 
     bool decode_points(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y);
 };

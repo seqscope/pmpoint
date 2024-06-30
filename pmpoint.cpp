@@ -3,7 +3,7 @@
 #include "qgenlib/qgen_utils.h"
 
 int32_t cmd_summarize_pmtiles(int32_t argc, char **argv);
-int32_t cmd_extract_pmtiles(int32_t argc, char **argv);
+int32_t cmd_export_pmtiles(int32_t argc, char **argv);
 
 int32_t main(int32_t argc, char **argv)
 {
@@ -14,7 +14,7 @@ int32_t main(int32_t argc, char **argv)
   BEGIN_LONG_COMMANDS(longCommandlines)
   LONG_COMMAND_GROUP("Tools for PMTiles", NULL)
   LONG_COMMAND("summarize", &cmd_summarize_pmtiles, "Summarize a PMTIles file")
-  LONG_COMMAND("extract", &cmd_extract_pmtiles, "Extract points from a PMTIles file")
+  LONG_COMMAND("export", &cmd_export_pmtiles, "Extract points from a PMTIles file")
   END_LONG_COMMANDS();
 
   cl.Add(new longCommands("Available Commands", longCommandlines));

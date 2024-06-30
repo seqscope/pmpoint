@@ -15,9 +15,9 @@
 #include "htslib/hts.h"
 
 /////////////////////////////////////////////////////////////////////////
-// extract : Extract points from a PMTiles file
+// extract : Export points from a PMTiles file to a TSV file
 ////////////////////////////////////////////////////////////////////////
-int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
+int32_t cmd_export_pmtiles(int32_t argc, char **argv)
 {
     std::string pmtilesf;
     int32_t zoom = -1;             // -1 represents the max zoom level available
@@ -30,7 +30,7 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
     double ymax = std::numeric_limits<double>::infinity();
 
     // parameter for geojson-based filtering
-    std::string geojsonf;
+    //std::string geojsonf;
 
     // output format
     std::string out_tsvf;
@@ -54,7 +54,7 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
     LONG_DOUBLE_PARAM("xmax", &xmax, "Maximum x-axis value")
     LONG_DOUBLE_PARAM("ymin", &ymin, "Minimum y-axis value")
     LONG_DOUBLE_PARAM("ymax", &ymax, "Maximum y-axis value")
-    LONG_STRING_PARAM("polygon", &geojsonf, "GeoJSON file for polygon-based filtering")
+    //LONG_STRING_PARAM("polygon", &geojsonf, "GeoJSON file for polygon-based filtering")
 
     LONG_PARAM_GROUP("Additional options", NULL)
     LONG_INT_PARAM("precision", &precision, "Precision of the output of X/Y coordinates (default: 3)")
@@ -80,7 +80,9 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
 
     // Open the header and tile entries
     notice("Reading header and tile entries...");
-    pmt.read_header_meta_entries();
+    if ( !pmt.read_header_meta_entries() ) {
+        error("This pmtiles file is malformed or incompatible with pmpoints, which requires collection of points in MVT format");
+    }
 
     // Identify tiles that intersect with the region
     if (zoom == -1)
@@ -96,15 +98,30 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
     }
 
     // convert the input coordinates to tile space
-    pmt_utils::pmt_pt_t max_pt(xmin, ymin, zoom);
-    pmt_utils::pmt_pt_t min_pt(xmax, ymax, zoom);
+    pmt_utils::pmt_pt_t min_pt(zoom, xmin, ymin);
+    pmt_utils::pmt_pt_t max_pt(zoom, xmax, ymax);
+    pmt_utils::pmt_pt_t g_min_pt(zoom, min_pt.tile_x, min_pt.tile_y, min_pt.local_x, min_pt.local_y);
+    pmt_utils::pmt_pt_t g_max_pt(zoom, max_pt.tile_x, max_pt.tile_y, max_pt.local_x, max_pt.local_y);
+
+    // notice("xmin = %.3f, ymin = %.3f", xmin, ymin);
+    // notice("xmax = %.3f, ymax = %.3f", xmax, ymax);
+    // notice("min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", min_pt.zoom, min_pt.global_x, min_pt.global_y, min_pt.tile_x, min_pt.tile_y, min_pt.local_x, min_pt.local_y);
+    // notice("max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", max_pt.zoom, max_pt.global_x, max_pt.global_y, max_pt.tile_x, max_pt.tile_y, max_pt.local_x, max_pt.local_y);
+    // notice("g_min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_min_pt.zoom, g_min_pt.global_x, g_min_pt.global_y, g_min_pt.tile_x, g_min_pt.tile_y, g_min_pt.local_x, g_min_pt.local_y);
+    // notice("g_max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_max_pt.zoom, g_max_pt.global_x, g_max_pt.global_y, g_max_pt.tile_x, g_max_pt.tile_y, g_max_pt.local_x, g_max_pt.local_y);
+    // exit(-1);
 
     // load json polygon
-    std::vector<Polygon> polygons;
-    if (!geojsonf.empty())
-    {
-        int32_t npolygons = load_polygons_from_geojson(geojsonf.c_str(), polygons);
-    }
+    // std::vector<Polygon> polygons;
+    // if (!geojsonf.empty())
+    // {
+    //     int32_t npolygons = load_polygons_from_geojson(geojsonf.c_str(), polygons);
+    // }
+    // std::vector<Rectangle> bounding_boxes;
+    // for (int32_t i = 0; i < polygons.size(); ++i)
+    // {
+    //     bounding_boxes.push_back(polygons[i].get_bounding_box());
+    // }
 
     // for each tile, check if it intersects with the region
     pt_dataframe df;
@@ -136,8 +153,19 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
         hprintf(json_wh, "{\n");
     }
 
+    int xmin_class = std::fpclassify(xmin);
+    int xmax_class = std::fpclassify(xmax);
+    int ymin_class = std::fpclassify(ymin);
+    int ymax_class = std::fpclassify(ymax);
+
+    bool has_boundary = !( (xmin_class == FP_INFINITE || xmin_class == FP_NAN) &&
+                           (xmax_class == FP_INFINITE || xmax_class == FP_NAN) &&
+                           (ymin_class == FP_INFINITE || ymin_class == FP_NAN) &&
+                           (ymax_class == FP_INFINITE || ymax_class == FP_NAN) );
+
     bool tsv_hdr_written = false;
     uint64_t n_written = 0;
+    //std::vector<Polygon *> tile_polygons;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         // notice("Checking tile %d/%d/%d", pmt.tile_entries[i].z, pmt.tile_entries[i].x, pmt.tile_entries[i].y);
@@ -146,27 +174,58 @@ int32_t cmd_extract_pmtiles(int32_t argc, char **argv)
         {
             continue;
         }
-        if (entry.x < min_pt.tile_x || entry.x > max_pt.tile_x || entry.y < min_pt.tile_y || entry.y > max_pt.tile_y)
-        {
-            continue;
+        // check if the boundary was set
+
+        // note that the y-axis is inverted, so min/max is swapped in y when comparing the tiles
+        if ( has_boundary ) {
+            if (entry.x < min_pt.tile_x || entry.x > max_pt.tile_x || entry.y < max_pt.tile_y || entry.y > min_pt.tile_y)
+            {
+                notice("Skipping (%lu, %lu) as it is outside the rectangle defined by (%lu, %lu) -- (%lu, %lu)", 
+                    entry.x, entry.y, min_pt.tile_x, min_pt.tile_y, max_pt.tile_x, max_pt.tile_y);
+                continue;
+            }
+            else {
+                notice("Considering (%lu, %lu) as it is inside the rectangle defined by (%lu, %lu) -- (%lu, %lu)", 
+                    entry.x, entry.y, min_pt.tile_x, min_pt.tile_y, max_pt.tile_x, max_pt.tile_y);
+            }
+            // if the min/max point is located at the tile, boundary, then we need to check the points
+            if (entry.x == min_pt.tile_x || entry.y == min_pt.tile_y)
+            {
+                mvtfilt.set_min_filt(&min_pt);
+            }
+            else
+            {
+                //mvtfilt.set_min_filt(&min_pt);
+                mvtfilt.set_min_filt(NULL);
+            }
+            if (entry.x == max_pt.tile_x || entry.y == max_pt.tile_y)
+            {
+                mvtfilt.set_max_filt(&max_pt);
+            }
+            else
+            {
+                //mvtfilt.set_max_filt(&max_pt);
+                mvtfilt.set_max_filt(NULL);
+            }
         }
-        // if the min/max point is located at the tile, boundary, then we need to check the points
-        if (entry.x == min_pt.tile_x || entry.y == min_pt.tile_y)
-        {
-            mvtfilt.set_min_filt(&min_pt);
-        }
-        else
-        {
-            mvtfilt.set_min_filt(NULL);
-        }
-        if (entry.x == max_pt.tile_x || entry.y == max_pt.tile_y)
-        {
-            mvtfilt.set_max_filt(&max_pt);
-        }
-        else
-        {
-            mvtfilt.set_max_filt(NULL);
-        }
+        // if (polygons.size() > 0)
+        // {
+        //     tile_polygons.clear();
+        //     Rectangle tile_bbox(entry.x, entry.y, entry.x + 1, entry.y + 1);
+        //     for (int32_t j = 0; j < bounding_boxes.size(); ++j)
+        //     {
+        //         if ( bounding_boxes[j].)
+        //         if (polygons[j].contains_point(min_pt.global_x, min_pt.global_y) || polygons[j].contains_point(max_pt.global_x, max_pt.global_y))
+        //         {
+        //             tile_polygons.push_back(&polygons[j]);
+        //         }
+        //     }
+        //     mvtfilt.set_polygon_filt(tile_polygons);
+        // }
+        // else
+        // {
+        //     mvtfilt.set_polygon_filt(tile_polygons);
+        // }
 
         // notice("Fetching tile %d/%d/%d that intersects with the region", entry.z, entry.x, entry.y);
         pmt.fetch_tile(entry.z, entry.x, entry.y);
