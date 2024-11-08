@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 #include <fstream>
+//#include <iostream>
 #include "ext/nlohmann/json.hpp"
 #include "qgenlib/qgen_error.h"
 
@@ -90,6 +91,7 @@ public:
         double ymax = std::numeric_limits<double>::min();
         for (auto &vertex : vertices)
         {
+            notice("Vertex: %lf, %lf, (%lg %lg %lg %lg)", vertex.x, vertex.y, xmin, ymin, xmax, ymax);
             if (vertex.x < xmin)
                 xmin = vertex.x;
             if (vertex.x > xmax)
@@ -103,40 +105,74 @@ public:
     }
 };
 
-inline int32_t load_polygons_from_geojson(const char *filename, std::vector<Polygon> &polygons)
+inline int32_t add_feature_to_polygons(const nlohmann::json &feature, std::vector<Polygon> &polygons)
 {
-    std::ifstream file(filename);
-    if (!file.is_open())
-    {
-        throw std::runtime_error("Could not open file");
+    if (!feature.contains("geometry")) {
+        error("Invalid Feature: missing 'geometry' field in the GeoJSON");
     }
 
-    nlohmann::json json;
-    file >> json;
+    auto &geometry = feature["geometry"];
+    
+    if (!geometry.contains("type") || !geometry.contains("coordinates")) {
+        error("Invalid geometry: missing 'type' or 'coordinates' field");
+    }
 
-    // notice("foo");
-    auto &feature = json["features"][0];
+    if (geometry["type"] != "Polygon") {
+        error("Geometry type is not Polygon");
+    }
 
-    // notice("bar");
+    const auto& coordinates = geometry["coordinates"];
 
+    // Iterate through each ring (exterior and holes)
     Polygon polygon;
-    auto &poly_coords = feature["geometry"]["coordinates"];
-
-    // notice("baz");
-
-    for (auto &coordinates : poly_coords)
-    {
-        Polygon polygon;
-        for (auto &coordinate : coordinates[0])
-        {
-            double x = coordinate[0];
-            double y = coordinate[1];
-            polygon.vertices.push_back(point_t(x, y));
+    for (size_t ringIndex = 0; ringIndex < coordinates.size(); ++ringIndex) {
+        if (ringIndex > 0) {
+            error("Holes are not supported");
         }
-        polygons.push_back(polygon);
+            
+        // Iterate through points in the ring
+        for (size_t pointIndex = 0; pointIndex < coordinates[ringIndex].size(); ++pointIndex) {
+            const auto& point = coordinates[ringIndex][pointIndex];
+            polygon.vertices.push_back(point_t(point[0], point[1]));
+        }
+    }
+    polygons.push_back(polygon);
+    return (int32_t)polygons.size();
+}
+
+inline int32_t load_polygons_from_geojson(const char *filename, std::vector<Polygon> &polygons)
+{
+    try {
+        std::ifstream file(filename);
+        if (!file.is_open())
+        {
+            throw std::runtime_error("Could not open file");
+        }
+
+        nlohmann::json json;
+        file >> json;
+
+        // sanity check on 'type'
+        if (!json.contains("type")) {
+            error("Invalid GeoJSON %s: missing 'type' field", filename);
+        }
+
+        if (json["type"] == "FeatureCollection") {
+            for (const auto& feature : json["features"]) {
+                add_feature_to_polygons(feature, polygons);
+            }
+        } else if (json["type"] == "Feature") {
+            add_feature_to_polygons(json, polygons);
+        } else {
+            error("Invalid GeoJSON %s: Cannot find 'Feature' of 'FeatureCollection' type", filename);
+        }
+    }
+    catch (const std::exception &e) {
+        error("Error loading GeoJSON %s: %s", filename, e.what());
     }
     return (int32_t)polygons.size();
 }
+
 
 inline bool polygons_contain_point(std::vector<Polygon> &polygons, double x, double y)
 {

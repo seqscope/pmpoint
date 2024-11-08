@@ -1,5 +1,5 @@
-#ifndef __PMTIME_H
-#define __PMTIME_H
+#ifndef __PMPOINT_H
+#define __PMPOINT_H
 
 #include <getopt.h>
 #include <cstdio>
@@ -16,4 +16,4 @@
 #include "qgenlib/qgen_error.h"
 #include "qgenlib/hts_utils.h"
 
-#endif
+#endif // __PMPOINT_H
