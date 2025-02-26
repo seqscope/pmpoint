@@ -256,3 +256,22 @@ bool mvt_pts::decode_points(const std::string &_buffer, double x_offset, double 
 
    return true;
 }
+
+uint64_t mvt_pts::count_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z)
+{
+    p_tile = new mapbox::vector_tile::buffer(_buffer);
+    if (p_tile == NULL)
+    {
+        return false;
+    }
+
+    uint64_t n_points = 0;
+    for (auto const &name : p_tile->layerNames())
+    {
+        const mapbox::vector_tile::layer layer = p_tile->getLayer(name);
+        std::size_t feature_count = layer.featureCount();
+        n_points += feature_count;
+    }
+
+    return n_points;
+}

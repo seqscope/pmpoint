@@ -339,7 +339,7 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
 
     if (json_wh != NULL)
     {
-        hprintf(json_wh, "{\n");
+        hprintf(json_wh, "}\n");
         hts_close(json_wh);
     }
     if (tsv_wh != NULL)
