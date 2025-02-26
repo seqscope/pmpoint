@@ -127,6 +127,10 @@ int32_t cmd_count_tiles(int32_t argc, char **argv)
             continue;
         }
 
+        if ( i % 100 == 0 ) {
+            notice("Processing %d-th tile %d/%d/%d", i+1, entry.z, entry.x, entry.y);
+        }
+
         // notice("Fetching tile %d/%d/%d that intersects with the region", entry.z, entry.x, entry.y);
         pmt.fetch_tile(entry.z, entry.x, entry.y);
         uint64_t n_points = mvt.count_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
