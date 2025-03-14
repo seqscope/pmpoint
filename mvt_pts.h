@@ -89,5 +89,7 @@ public:
 
     bool decode_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z);
     uint64_t count_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z);
+    //int decode_points_localxy(const std::string &_buffer, std::vector<int32_t>& xs, std::vector<int32_t>& ys);
+    int32_t decode_points_xycnt(const std::string &_buffer, const std::string& colname_cnt, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts);
 };
 #endif // __MVT_PTS_H

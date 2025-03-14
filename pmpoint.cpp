@@ -3,6 +3,8 @@
 #include "qgenlib/qgen_utils.h"
 
 int32_t cmd_summarize_pmtiles(int32_t argc, char **argv);
+int32_t cmd_tile_density_stats(int32_t argc, char **argv);
+int32_t cmd_tile_density_stats_mt(int32_t argc, char **argv);
 int32_t cmd_export_pmtiles(int32_t argc, char **argv);
 int32_t cmd_count_tiles(int32_t argc, char **argv);
 
@@ -15,6 +17,8 @@ int32_t main(int32_t argc, char **argv)
   BEGIN_LONG_COMMANDS(longCommandlines)
   LONG_COMMAND_GROUP("Tools for PMTiles", NULL)
   LONG_COMMAND("summarize", &cmd_summarize_pmtiles, "Summarize a PMTIles file")
+  LONG_COMMAND("tile-density-stats", &cmd_tile_density_stats, "Calculate statistics of tile densities")
+  LONG_COMMAND("tile-density-stats-mt", &cmd_tile_density_stats_mt, "Calculate statistics of tile densities")
   LONG_COMMAND("export", &cmd_export_pmtiles, "Extract points from a PMTIles file")
   LONG_COMMAND("count-tiles", &cmd_count_tiles, "Count number of points in each tiles from a PMTiles file")
   END_LONG_COMMANDS();

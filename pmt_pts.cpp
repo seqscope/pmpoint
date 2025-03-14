@@ -301,3 +301,33 @@ size_t pmt_pts::fetch_tile(uint8_t z, uint32_t x, uint32_t y)
 
   return tile_data_str.size();
 }
+
+size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer)
+{
+  uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
+  if (tileid2idx.find(tile_id) == tileid2idx.end())
+  {
+    error("Tile %u/%lu/%lu not found", z, x, y);
+  }
+  const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
+  // allocate memory for the tile data
+  char *tile_data = new char[e.length];
+  // move to the tile data offset
+  if (cur_pos != e.offset)
+  {
+    fseek(fp, e.offset, SEEK_SET);
+    cur_pos = e.offset;
+  }
+  // read the tile data
+  if (fread(tile_data, 1, e.length, fp) != e.length)
+  {
+    delete[] tile_data;
+    error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+  }
+  // uncompress the tile data
+  std::string tile_comp_data_str(tile_data, e.length);
+  delete[] tile_data;
+  buffer = decompress_func(tile_comp_data_str, hdr.tile_compression);
+
+  return tile_data_str.size();
+}

@@ -56,6 +56,79 @@ public:
     }
 };
 
+int32_t mvt_pts::decode_points_xycnt(const std::string &_buffer, const std::string& colname_cnt, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts)
+{
+    // p_tile = new mapbox::vector_tile::buffer(_buffer);
+    // if (p_tile == NULL)
+    // {
+    //     return false;
+    // }
+
+    mapbox::vector_tile::buffer* local_p_tile = new mapbox::vector_tile::buffer(_buffer);
+    if (local_p_tile == NULL)
+    {
+        return false;
+    }
+
+    // assuming that all objects are points with rectangular structure, try to decode the tile
+    std::vector<std::string> colnames;
+    colnames.push_back("X");
+    colnames.push_back("Y");
+    std::vector<std::vector<std::string>> columns(2);
+    int32_t n_points = 0;
+
+    for (auto const &name : local_p_tile->layerNames())
+    {
+        const mapbox::vector_tile::layer layer = local_p_tile->getLayer(name);
+        std::size_t feature_count = layer.featureCount();
+        if (feature_count > 0)
+        {
+            for (std::size_t i = 0; i < feature_count; ++i)
+            {
+                auto const feature = mapbox::vector_tile::feature(layer.getFeature(i), layer);
+
+                // make sure that the types are points
+                if (int(feature.getType()) != 1)
+                {
+                    error("Only points are supported in decode_points()");
+                }
+
+                // obtain vertex
+                mapbox::vector_tile::points_arrays_type geom = feature.getGeometries<mapbox::vector_tile::points_arrays_type>(1.0);
+                if (geom.size() != 1)
+                {
+                    error("Only single point per feature is supported in decode_points()");
+                }
+                xs.push_back(geom[0][0].x);
+                ys.push_back(geom[0][0].y);
+
+                // obtain properties;
+                auto props = feature.getProperties();
+                int32_t j = 2;
+                for (auto const &prop : props)
+                {
+                    if ( colname_cnt.compare(prop.first) == 0 ) {
+                        print_value printvisitor;
+                        std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
+                        try {
+                            cnts.push_back(std::stoi(value));
+                        } catch (std::invalid_argument& e) {
+                            notice("Invalid count value %s observed at %d/%d, considering as zero count", value.c_str(), geom[0][0].x, geom[0][0].y);
+                            cnts.push_back(0);
+                        }
+                    }
+                }                
+            }
+        }
+        n_points += feature_count;
+    }
+    //delete p_tile;
+    //p_tile = NULL;
+    delete local_p_tile;
+
+   return n_points;
+}
+
 bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y)
 {
     p_tile = new mapbox::vector_tile::buffer(_buffer);
@@ -232,24 +305,24 @@ bool mvt_pts::decode_points(const std::string &_buffer, double x_offset, double 
         n_points += feature_count;
     }
 
-    // print the decoded points
-    printf("%s", colnames[0].c_str());
-    for (int32_t i = 1; i < colnames.size(); ++i)
-    {
-        printf("\t%s", colnames[i].c_str());
-    }
-    printf("\n");
+    // // print the decoded points
+    // printf("%s", colnames[0].c_str());
+    // for (int32_t i = 1; i < colnames.size(); ++i)
+    // {
+    //     printf("\t%s", colnames[i].c_str());
+    // }
+    // printf("\n");
 
-    // print the values
-    for (int32_t i = 0; i < n_points; ++i)
-    {
-        printf("%s", columns[0][i].c_str());
-        for (int32_t j = 1; j < colnames.size(); ++j)
-        {
-            printf("\t%s", columns[j][i].c_str());
-        }
-        printf("\n");
-    }
+    // // print the values
+    // for (int32_t i = 0; i < n_points; ++i)
+    // {
+    //     printf("%s", columns[0][i].c_str());
+    //     for (int32_t j = 1; j < colnames.size(); ++j)
+    //     {
+    //         printf("\t%s", columns[j][i].c_str());
+    //     }
+    //     printf("\n");
+    // }
 
     delete p_tile;
     p_tile = NULL;

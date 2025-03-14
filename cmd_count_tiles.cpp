@@ -118,6 +118,7 @@ int32_t cmd_count_tiles(int32_t argc, char **argv)
     std::vector<std::map<uint64_t, uint64_t> > zoom2tile2count(pmt.hdr.max_zoom + 1);
     std::vector<std::map<uint64_t, uint64_t> > zoom2tile2sum(pmt.hdr.max_zoom + 1);
 
+    
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];

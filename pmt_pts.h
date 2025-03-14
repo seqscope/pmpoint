@@ -30,6 +30,7 @@ public:
     bool read_metadata();            // read the metadata of a PMTiles file
     // bool get_tile_entries();      // get the tile entries of a PMTiles file
     size_t fetch_tile(uint8_t z, uint32_t x, uint32_t y); // fetch the uncompressed tile data of a PMTiles file
+    size_t fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer); // fetch the uncompressed tile data of a PMTiles file
     // uint32_t parse_fetched_tile_as_mvt();                          // parse the fetched tile data as an MVTile object
     void print_header_info(FILE *fp);
     void print_metadata(FILE *fp);

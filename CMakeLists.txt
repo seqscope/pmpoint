@@ -44,6 +44,8 @@ message(STATUS ${QGEN_LIBRARIES})
 include_directories(${HTS_INCLUDE_DIRS} ${QGEN_INCLUDE_DIRS} ext)
 
 set(SOURCE_FILES
+    cmd_tile_density_stats_mt.cpp
+    cmd_tile_density_stats.cpp
     cmd_count_tiles.cpp
     cmd_export_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
