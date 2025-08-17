@@ -20,7 +20,7 @@
 #include "htslib/hts.h"
 #include "ext/nlohmann/json.hpp"
 
-#define MAX_BITS 12
+#define MAX_BITS 13
 class tile_density_summary {
 public:
     int32_t maxbits;
@@ -177,19 +177,21 @@ public:
 };
 
 // Worker thread function
-void process_tiles(TileQueue& queue, pmt_pts& pmt, ThreadSafeResults& results, const std::string& count_field, std::atomic<int32_t>& processed_count) {
+void process_tiles(TileQueue& queue, pmt_pts& pmt, ThreadSafeResults& results, const std::string& count_field, const std::string& feature_field, std::atomic<int32_t>& processed_count) {
     pmtiles::entry_zxy entry(0,0,0,0,0);
     mvt_pts mvt;
     std::string buffer;
     
     while (queue.get_tile(entry)) {
-        notice("Processing tile %d/%d/%d", entry.z, entry.x, entry.y);
         pmt_pts& local_pmt = pmt; // Create a thread-local copy for thread safety
         local_pmt.fetch_tile_to_buffer(entry.z, entry.x, entry.y, buffer);
         
         std::vector<int32_t> xs, ys, cnts;
+        std::vector<std::string> features;
         //int32_t n_pts = mvt.decode_points_xycnt(local_pmt.tile_data_str, count_field, xs, ys, cnts);
-        int32_t n_pts = mvt.decode_points_xycnt(buffer, count_field, xs, ys, cnts);
+        int32_t n_pts = mvt.decode_points_xycnt_feature(buffer, count_field, feature_field, xs, ys, cnts, features);
+
+        notice("Processing tile %d/%d/%d with %d points", entry.z, entry.x, entry.y, n_pts);
         
         tile_density_data tdd;
         tile_density_summary tds;
@@ -224,6 +226,7 @@ int32_t cmd_tile_density_stats_mt(int32_t argc, char **argv)
     // output format
     std::string out_tsvf;
     std::string count_field("gn");
+    std::string feature_field("gene");
     bool compact = false;
 
     paramList pl;
@@ -232,6 +235,7 @@ int32_t cmd_tile_density_stats_mt(int32_t argc, char **argv)
     LONG_PARAM_GROUP("Input options", NULL)
     LONG_STRING_PARAM("in", &pmtilesf, "Input PMTiles file")
     LONG_STRING_PARAM("count", &count_field, "Field name for transcript counts")
+    LONG_STRING_PARAM("feature", &feature_field, "Field name for feature name")
 
     LONG_PARAM_GROUP("Output options", NULL)
     LONG_PARAM("compact", &compact, "Skip writing each tile")
@@ -331,7 +335,7 @@ int32_t cmd_tile_density_stats_mt(int32_t argc, char **argv)
     
     for (int32_t i = 0; i < num_threads; ++i) {
         threads.emplace_back(process_tiles, std::ref(tile_queue), std::ref(pmt), 
-                             std::ref(results), std::ref(count_field), std::ref(processed_count));
+                             std::ref(results), std::ref(count_field), std::ref(feature_field), std::ref(processed_count));
     }
     
     // Wait for all threads to complete

@@ -184,6 +184,7 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
     bool tsv_hdr_written = false;
     uint64_t n_written = 0;
     std::vector<Polygon *> tile_polygons;
+    std::string tile_buffer;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];
@@ -274,8 +275,10 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
         }
 
         // notice("Fetching tile %d/%d/%d that intersects with the region", entry.z, entry.x, entry.y);
-        pmt.fetch_tile(entry.z, entry.x, entry.y);
-        mvtfilt.decode_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
+        //pmt.fetch_tile(entry.z, entry.x, entry.y);
+        //mvtfilt.decode_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
+        pmt.fetch_tile_to_buffer(entry.z, entry.x, entry.y, tile_buffer);
+        mvtfilt.decode_points_df(tile_buffer, entry.z, entry.x, entry.y, df);
 
         if (tsv_wh != NULL)
         {

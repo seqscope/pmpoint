@@ -49,17 +49,17 @@ public:
     std::vector<Polygon*> polygons;
     pmt_utils::pmt_pt_t *p_min_pt = NULL;
     pmt_utils::pmt_pt_t *p_max_pt = NULL;
-    mapbox::vector_tile::buffer *p_tile = NULL;
-    pt_dataframe *p_df;
+    //mapbox::vector_tile::buffer *p_tile = NULL;
+    //pt_dataframe *p_df;
 
-    mvt_pts_filt(pt_dataframe *p = NULL) : p_df(p) {}
+    mvt_pts_filt(pt_dataframe *p = NULL) {} //: p_df(p) {}
     ~mvt_pts_filt()
     {
-        if (p_tile)
-            delete p_tile;
+        //if (p_tile)
+        //    delete p_tile;
     }
 
-    inline void set_df(pt_dataframe *p) { p_df = p; }
+    //inline void set_df(pt_dataframe *p) { p_df = p; }
     inline void set_min_filt(pmt_utils::pmt_pt_t *_min_pt) { p_min_pt = _min_pt; }
     inline void set_max_filt(pmt_utils::pmt_pt_t *_max_pt) { p_max_pt = _max_pt; }
     inline void set_polygon_filt(std::vector<Polygon*> &_polygons) { polygons = _polygons; }
@@ -73,23 +73,24 @@ public:
     //     notice("Finished loading %zu polygons", polygons.size());
     // }
 
-    bool decode_points(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y);
+    bool decode_points_df(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y, pt_dataframe& df);
 };
 
 class mvt_pts
 {
 public:
-    mapbox::vector_tile::buffer *p_tile = NULL;
+    //mapbox::vector_tile::buffer *p_tile = NULL;
     mvt_pts() {}
     ~mvt_pts()
     {
-        if (p_tile)
-            delete p_tile;
+        //if (p_tile)
+        //    delete p_tile;
     }
 
-    bool decode_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z);
-    uint64_t count_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z);
+    bool decode_points_df(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y, pt_dataframe& df);
+    uint64_t count_points(const std::string &_buffer); //, double x_offset, double y_offset, uint8_t z);
     //int decode_points_localxy(const std::string &_buffer, std::vector<int32_t>& xs, std::vector<int32_t>& ys);
-    int32_t decode_points_xycnt(const std::string &_buffer, const std::string& colname_cnt, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts);
+    //int32_t decode_points_xycnt(const std::string &_buffer, const std::string& colname_cnt, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts);
+    int32_t decode_points_xycnt_feature(const std::string &_buffer, const std::string& colname_cnt, const std::string& colname_feature, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts, std::vector<std::string>& features);
 };
 #endif // __MVT_PTS_H

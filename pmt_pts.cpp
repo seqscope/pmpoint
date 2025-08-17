@@ -87,6 +87,7 @@ void pmt_pts::init()
 
 bool pmt_pts::open(const char *fname)
 {
+  std::lock_guard<std::mutex> lock(mtx);
   fp = fopen(fname, "rb");
   if (fp == NULL)
   {
@@ -97,6 +98,7 @@ bool pmt_pts::open(const char *fname)
 
 void pmt_pts::close()
 {
+  std::lock_guard<std::mutex> lock(mtx);
   if (fp != NULL)
   {
     fclose(fp);
@@ -164,6 +166,7 @@ void pmt_pts::print_tile_entries(FILE *fp, uint8_t min_zoom, uint8_t max_zoom)
 
 bool pmt_pts::read_header_meta_entries()
 {
+  std::lock_guard<std::mutex> lock(mtx);
   if (fp == NULL)
   {
     return false;
@@ -232,6 +235,7 @@ bool pmt_pts::read_header_meta_entries()
 
 bool pmt_pts::read_metadata()
 {
+  std::lock_guard<std::mutex> lock(mtx);
   if (fp == NULL)
   {
     return false;
@@ -272,35 +276,35 @@ bool pmt_pts::read_metadata()
   return true;
 }
 
-size_t pmt_pts::fetch_tile(uint8_t z, uint32_t x, uint32_t y)
-{
-  uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
-  if (tileid2idx.find(tile_id) == tileid2idx.end())
-  {
-    error("Tile %u/%lu/%lu not found", z, x, y);
-  }
-  const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
-  // allocate memory for the tile data
-  char *tile_data = new char[e.length];
-  // move to the tile data offset
-  if (cur_pos != e.offset)
-  {
-    fseek(fp, e.offset, SEEK_SET);
-    cur_pos = e.offset;
-  }
-  // read the tile data
-  if (fread(tile_data, 1, e.length, fp) != e.length)
-  {
-    delete[] tile_data;
-    error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
-  }
-  // uncompress the tile data
-  std::string tile_comp_data_str(tile_data, e.length);
-  delete[] tile_data;
-  tile_data_str = decompress_func(tile_comp_data_str, hdr.tile_compression);
+// size_t pmt_pts::fetch_tile(uint8_t z, uint32_t x, uint32_t y)
+// {
+//   uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
+//   if (tileid2idx.find(tile_id) == tileid2idx.end())
+//   {
+//     error("Tile %u/%lu/%lu not found", z, x, y);
+//   }
+//   const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
+//   // allocate memory for the tile data
+//   char *tile_data = new char[e.length];
+//   // move to the tile data offset
+//   if (cur_pos != e.offset)
+//   {
+//     fseek(fp, e.offset, SEEK_SET);
+//     cur_pos = e.offset;
+//   }
+//   // read the tile data
+//   if (fread(tile_data, 1, e.length, fp) != e.length)
+//   {
+//     delete[] tile_data;
+//     error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+//   }
+//   // uncompress the tile data
+//   std::string tile_comp_data_str(tile_data, e.length);
+//   delete[] tile_data;
+//   tile_data_str = decompress_func(tile_comp_data_str, hdr.tile_compression);
 
-  return tile_data_str.size();
-}
+//   return tile_data_str.size();
+// }
 
 size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer)
 {
@@ -313,21 +317,25 @@ size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::str
   // allocate memory for the tile data
   char *tile_data = new char[e.length];
   // move to the tile data offset
-  if (cur_pos != e.offset)
   {
-    fseek(fp, e.offset, SEEK_SET);
-    cur_pos = e.offset;
-  }
-  // read the tile data
-  if (fread(tile_data, 1, e.length, fp) != e.length)
-  {
-    delete[] tile_data;
-    error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+    std::lock_guard<std::mutex> lock(mtx);
+    if (cur_pos != e.offset)
+    {
+      fseek(fp, e.offset, SEEK_SET);
+      cur_pos = e.offset;
+    }
+    // read the tile data
+    if (fread(tile_data, 1, e.length, fp) != e.length)
+    {
+      delete[] tile_data;
+      error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+    }
   }
   // uncompress the tile data
   std::string tile_comp_data_str(tile_data, e.length);
   delete[] tile_data;
   buffer = decompress_func(tile_comp_data_str, hdr.tile_compression);
 
-  return tile_data_str.size();
+  //return tile_data_str.size();
+  return buffer.size();
 }

@@ -56,7 +56,7 @@ public:
     }
 };
 
-int32_t mvt_pts::decode_points_xycnt(const std::string &_buffer, const std::string& colname_cnt, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts)
+int32_t mvt_pts::decode_points_xycnt_feature(const std::string &_buffer, const std::string& colname_cnt, const std::string& colname_feature, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts, std::vector<std::string>& features)
 {
     // p_tile = new mapbox::vector_tile::buffer(_buffer);
     // if (p_tile == NULL)
@@ -117,7 +117,15 @@ int32_t mvt_pts::decode_points_xycnt(const std::string &_buffer, const std::stri
                             cnts.push_back(0);
                         }
                     }
-                }                
+                    else if ( colname_feature.compare(prop.first) == 0 ) {
+                        print_value printvisitor;
+                        std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
+                        features.push_back(value);
+                    }
+                }
+                if ( xs.size() != ys.size() || xs.size() != cnts.size() || xs.size() != features.size() ) {
+                    error("Inconsistent sizes of xs, ys, cnts, and features. xs=%zu, ys=%zu, cnts=%zu, features=%zu", xs.size(), ys.size(), cnts.size(), features.size());
+                }
             }
         }
         n_points += feature_count;
@@ -129,9 +137,9 @@ int32_t mvt_pts::decode_points_xycnt(const std::string &_buffer, const std::stri
    return n_points;
 }
 
-bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y)
+bool mvt_pts_filt::decode_points_df(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y, pt_dataframe& df)
 {
-    p_tile = new mapbox::vector_tile::buffer(_buffer);
+    mapbox::vector_tile::buffer* p_tile = new mapbox::vector_tile::buffer(_buffer);
     if (p_tile == NULL)
     {
         return false;
@@ -208,7 +216,7 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
 
                 ++npass;
 
-                p_df->points.push_back(pt);
+                df.points.push_back(pt);
 
                 // obtain properties;
                 auto props = feature.getProperties();
@@ -217,7 +225,7 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
                 {
                     print_value printvisitor;
                     std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
-                    p_df->add_feature(j, prop.first, value);
+                    df.add_feature(j, prop.first, value);
                     ++j;
                 }
             }
@@ -226,29 +234,31 @@ bool mvt_pts_filt::decode_points(const std::string &_buffer, uint8_t zoom, int64
     }
 
     delete p_tile;
-    p_tile = NULL;
+    //p_tile = NULL;
     return true;
 }
 
-bool mvt_pts::decode_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z)
+bool mvt_pts::decode_points_df(const std::string &_buffer, uint8_t zoom, int64_t tile_x, int64_t tile_y, pt_dataframe& df)
 {
-    p_tile = new mapbox::vector_tile::buffer(_buffer);
+    mapbox::vector_tile::buffer* p_tile = new mapbox::vector_tile::buffer(_buffer);
     if (p_tile == NULL)
     {
         return false;
     }
 
     // assuming that all objects are points with rectangular structure, try to decode the tile
-    std::vector<std::string> colnames;
-    colnames.push_back("X");
-    colnames.push_back("Y");
-    std::vector<std::vector<std::string>> columns(2);
+    // std::vector<std::string> colnames;
+    // colnames.push_back("X");
+    // colnames.push_back("Y");
+    // std::vector<std::vector<std::string>> columns(2);
     int32_t n_points = 0;
-    char bufx[255], bufy[255];
+    // char bufx[255], bufy[255];
 
     // scale factor for EPSG:3857 to original coordinates
     // double scale_factor = 2 * pmt_utils::EPSG_3857_bound / ( 1 << (z + 12) );
-    double scale_factor = pmt_utils::epsg3857_scale_factor(z);
+    double scale_factor = pmt_utils::epsg3857_scale_factor(zoom);
+    double offset_x, offset_y;
+    pmt_utils::tiletoepsg3857(tile_x, tile_y, zoom, &offset_x, &offset_y);
 
     for (auto const &name : p_tile->layerNames())
     {
@@ -272,34 +282,48 @@ bool mvt_pts::decode_points(const std::string &_buffer, double x_offset, double 
                 {
                     error("Only single point per feature is supported in decode_points()");
                 }
+                pmt_utils::pmt_pt_t pt(zoom, offset_x + scale_factor * geom[0][0].x, offset_y - scale_factor * geom[0][0].y);
 
-                snprintf(bufx, sizeof(bufx), "%.3f", x_offset + scale_factor * geom[0][0].x);
-                snprintf(bufy, sizeof(bufy), "%.3f", y_offset - scale_factor * geom[0][0].y);
-                columns[0].push_back(bufx);
-                columns[1].push_back(bufy);
+                df.points.push_back(pt);
 
                 // obtain properties;
                 auto props = feature.getProperties();
-                int32_t j = 2;
+                int32_t j = 0;
                 for (auto const &prop : props)
                 {
                     print_value printvisitor;
                     std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
-                    if (i == 0)
-                    { // for first columns fill in column names
-                        colnames.push_back(prop.first);
-                        columns.resize(colnames.size());
-                    }
-                    else
-                    {
-                        if (colnames[j].compare(prop.first) != 0)
-                        {
-                            error("Mismatched column names - %s vs %s at index = %d, row = %d in decode_points()", colnames[i].c_str(), prop.first.c_str(), i, j);
-                        }
-                    }
-                    columns[j].push_back(value);
+                    df.add_feature(j, prop.first, value);
                     ++j;
                 }
+
+                // snprintf(bufx, sizeof(bufx), "%.3f", x_offset + scale_factor * geom[0][0].x);
+                // snprintf(bufy, sizeof(bufy), "%.3f", y_offset - scale_factor * geom[0][0].y);
+                // columns[0].push_back(bufx);
+                // columns[1].push_back(bufy);
+
+                // obtain properties;
+                // auto props = feature.getProperties();
+                // int32_t j = 2;
+                // for (auto const &prop : props)
+                // {
+                //     print_value printvisitor;
+                //     std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
+                //     if (i == 0)
+                //     { // for first columns fill in column names
+                //         colnames.push_back(prop.first);
+                //         columns.resize(colnames.size());
+                //     }
+                //     else
+                //     {
+                //         if (colnames[j].compare(prop.first) != 0)
+                //         {
+                //             error("Mismatched column names - %s vs %s at index = %d, row = %d in decode_points()", colnames[i].c_str(), prop.first.c_str(), i, j);
+                //         }
+                //     }
+                //     columns[j].push_back(value);
+                //     ++j;
+                // }
             }
         }
         n_points += feature_count;
@@ -325,14 +349,14 @@ bool mvt_pts::decode_points(const std::string &_buffer, double x_offset, double 
     // }
 
     delete p_tile;
-    p_tile = NULL;
+    //p_tile = NULL;
 
    return true;
 }
 
-uint64_t mvt_pts::count_points(const std::string &_buffer, double x_offset, double y_offset, uint8_t z)
+uint64_t mvt_pts::count_points(const std::string &_buffer)
 {
-    p_tile = new mapbox::vector_tile::buffer(_buffer);
+    mapbox::vector_tile::buffer* p_tile = new mapbox::vector_tile::buffer(_buffer);
     if (p_tile == NULL)
     {
         return false;
@@ -346,5 +370,6 @@ uint64_t mvt_pts::count_points(const std::string &_buffer, double x_offset, doub
         n_points += feature_count;
     }
 
+    delete p_tile;
     return n_points;
 }

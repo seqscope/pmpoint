@@ -3,11 +3,13 @@
 
 #include "ext/PMTiles/pmtiles.hpp"
 #include "ext/nlohmann/json.hpp"
+#include <mutex>
+#include <thread>
+
 
 // A class for handling a PMTiles file that contains a collection of points in MVT format
 // Each point may have multiple attributes, so the data can be reformatted in rectangular dataframe
 // This implementation relies on the PMTiles v3 specification
-
 class pmt_pts
 {
 public:
@@ -18,7 +20,8 @@ public:
     std::vector<pmtiles::entry_zxy> tile_entries; // list of tile entries
     std::map<uint64_t, uint32_t> tileid2idx;      // dictionary of the file entries based on the tile ID
     std::function<std::string(const std::string &, uint8_t)> decompress_func;
-    std::string tile_data_str; // string to store uncompressed tile data
+    std::mutex mtx; // mutex for multi-threading
+    //std::string tile_data_str; // string to store uncompressed tile data // removed due for multi-threading
 
     bool hdr_read = false;  // flag to indicate if the header is read
     bool meta_read = false; // flag to indicate if the metadata is read
@@ -29,7 +32,7 @@ public:
     bool read_header_meta_entries(); // read the header of a PMTiles file
     bool read_metadata();            // read the metadata of a PMTiles file
     // bool get_tile_entries();      // get the tile entries of a PMTiles file
-    size_t fetch_tile(uint8_t z, uint32_t x, uint32_t y); // fetch the uncompressed tile data of a PMTiles file
+    //size_t fetch_tile(uint8_t z, uint32_t x, uint32_t y); // fetch the uncompressed tile data of a PMTiles file
     size_t fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer); // fetch the uncompressed tile data of a PMTiles file
     // uint32_t parse_fetched_tile_as_mvt();                          // parse the fetched tile data as an MVTile object
     void print_header_info(FILE *fp);
