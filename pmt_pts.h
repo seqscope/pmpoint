@@ -3,6 +3,7 @@
 
 #include "ext/PMTiles/pmtiles.hpp"
 #include "ext/nlohmann/json.hpp"
+#include "flex_io.h"
 #include <mutex>
 #include <thread>
 
@@ -13,10 +14,11 @@
 class pmt_pts
 {
 public:
-    FILE *fp = NULL;                              // file pointer
+    //FILE *fp = NULL;                              // file pointer
+    std::unique_ptr<FlexReader> flex_reader_ptr;  // pointer to a FlexReader object
     pmtiles::headerv3 hdr;                        // PMTiles v3 header
     nlohmann::json jmeta;                         // metadata as a JSON object
-    uint64_t cur_pos = 0;                         // current offset of the file
+    //uint64_t cur_pos = 0;                         // current offset of the file
     std::vector<pmtiles::entry_zxy> tile_entries; // list of tile entries
     std::map<uint64_t, uint32_t> tileid2idx;      // dictionary of the file entries based on the tile ID
     std::function<std::string(const std::string &, uint8_t)> decompress_func;
