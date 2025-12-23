@@ -49,6 +49,8 @@ set(SOURCE_FILES
     cmd_count_tiles.cpp
     cmd_export_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
+    flex_io.h
+    flex_io.cpp
     polygon.h
     pmt_utils.h
     pmt_utils.cpp

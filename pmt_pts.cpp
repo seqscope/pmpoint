@@ -87,21 +87,33 @@ void pmt_pts::init()
 
 bool pmt_pts::open(const char *fname)
 {
-  fp = fopen(fname, "rb");
-  if (fp == NULL)
-  {
+  std::lock_guard<std::mutex> lock(mtx);
+  flex_reader_ptr = FlexReaderFactory::create_reader(fname);
+  if (flex_reader_ptr == nullptr || !flex_reader_ptr->is_open()) {
+    error("Failed to open file %s", fname);
     return false;
   }
-  return true;
+  else {
+    return true;
+  }
+  // fp = fopen(fname, "rb");
+  // if (fp == NULL)
+  // {
+  //   return false;
+  // }
+  // return true;
 }
 
 void pmt_pts::close()
 {
-  if (fp != NULL)
-  {
-    fclose(fp);
-    fp = NULL;
-  }
+  std::lock_guard<std::mutex> lock(mtx);
+  flex_reader_ptr->close();
+  flex_reader_ptr = nullptr;
+  // if (fp != NULL)
+  // {
+  //   fclose(fp);
+  //   fp = NULL;
+  // }
 }
 
 void pmt_pts::print_header_info(FILE *fp)
@@ -164,8 +176,12 @@ void pmt_pts::print_tile_entries(FILE *fp, uint8_t min_zoom, uint8_t max_zoom)
 
 bool pmt_pts::read_header_meta_entries()
 {
-  if (fp == NULL)
-  {
+  std::lock_guard<std::mutex> lock(mtx);
+  // if (fp == NULL)
+  // {
+  //   return false;
+  // }
+  if (flex_reader_ptr == nullptr || !flex_reader_ptr->is_open()) {
     return false;
   }
   if (hdr_read)
@@ -173,20 +189,30 @@ bool pmt_pts::read_header_meta_entries()
     return true;
   }
   // the header is 127 bytes field that is at the start of the archive.
-  if (cur_pos != 0)
-  {
-    // reset the current position to the start of the file
-    fseek(fp, 0, SEEK_SET);
-    cur_pos = 0;
-  }
-  char hdr_bytes[128];
-  if (fread(hdr_bytes, 1, 127, fp) != 127)
-  {
+  std::string hdr_str;
+  if (!flex_reader_ptr->read_at(0, 127, hdr_str) || hdr_str.size() != 127) {
+    notice("hdr_str size: %zu", hdr_str.size());
+    notice("hdr_str[0-6]: %s", hdr_str.substr(0, 7).c_str());
+    error("Failed to read PMTiles header info");
     return false;
   }
-  cur_pos += 127;
+  //notice("hdr_str size: %zu", hdr_str.size());
+  //notice("hdr_str[0-6]: %s", hdr_str.substr(0, 7).c_str());
+  //cur_pos = 127;
+  // if (cur_pos != 0)
+  // {
+  //   // reset the current position to the start of the file
+  //   fseek(fp, 0, SEEK_SET);
+  //   cur_pos = 0;
+  // }
+  // char hdr_bytes[128];
+  // if (fread(hdr_bytes, 1, 127, fp) != 127)
+  // {
+  //   return false;
+  // }
+  //cur_pos += 127;
   // create a string
-  std::string hdr_str(hdr_bytes, 127);
+  //std::string hdr_str(hdr_bytes, 127);
 
   hdr = pmtiles::deserialize_header(hdr_str);
 
@@ -198,24 +224,33 @@ bool pmt_pts::read_header_meta_entries()
 
   // print_header_info(stdout);
 
-  char *buffer_before_tiles = new char[hdr.tile_data_offset];
-  memcpy(buffer_before_tiles, hdr_bytes, 127);
-  if (fread(buffer_before_tiles + 127, 1, hdr.tile_data_offset - 127, fp) != hdr.tile_data_offset - 127)
+  // char *buffer_before_tiles = new char[hdr.tile_data_offset];
+  // //memcpy(buffer_before_tiles, hdr_bytes, 127);
+  // memcpy(buffer_before_tiles, hdr_str.c_str(), 127);
+  // if (fread(buffer_before_tiles + 127, 1, hdr.tile_data_offset - 127, fp) != hdr.tile_data_offset - 127)
+  // {
+  //   return false;
+  // }
+  //cur_pos = hdr.tile_data_offset;
+
+  //tile_entries = pmtiles::entries_tms(decompress_func, buffer_before_tiles);
+
+  std::string str_before_tiles;
+  if (!flex_reader_ptr->read_at(0, hdr.tile_data_offset, str_before_tiles) || str_before_tiles.size() != hdr.tile_data_offset)
   {
     return false;
   }
-  cur_pos = hdr.tile_data_offset;
-
-  tile_entries = pmtiles::entries_tms(decompress_func, buffer_before_tiles);
+  tile_entries = pmtiles::entries_tms(decompress_func, str_before_tiles.c_str());
 
   // read metadata information
-  std::string meta_compressed(buffer_before_tiles + hdr.json_metadata_offset, hdr.json_metadata_bytes);
+  //std::string meta_compressed(buffer_before_tiles + hdr.json_metadata_offset, hdr.json_metadata_bytes);
+  std::string meta_compressed = str_before_tiles.substr(hdr.json_metadata_offset, hdr.json_metadata_bytes);
   std::string meta_decompressed = decompress_func(meta_compressed, hdr.internal_compression);
 
   // load the metadata into a json object
   jmeta = nlohmann::json::parse(meta_decompressed);
 
-  delete[] buffer_before_tiles;
+  //delete[] buffer_before_tiles;
 
   // build a map of tile entries
   notice("A total of %zu tile entries are found", tile_entries.size());
@@ -232,10 +267,14 @@ bool pmt_pts::read_header_meta_entries()
 
 bool pmt_pts::read_metadata()
 {
-  if (fp == NULL)
-  {
+  std::lock_guard<std::mutex> lock(mtx);
+  if (flex_reader_ptr == nullptr || !flex_reader_ptr->is_open()) {
     return false;
   }
+  // if (fp == NULL)
+  // {
+  //   return false;
+  // }
   if (meta_read)
   {
     return true;
@@ -245,62 +284,66 @@ bool pmt_pts::read_metadata()
     return false;
   }
   // move to the metadata offset
-  if (cur_pos != hdr.json_metadata_offset)
-  {
-    fseek(fp, hdr.json_metadata_offset, SEEK_SET);
-    cur_pos = hdr.json_metadata_offset;
-  }
-  // read the metadata
-  char *p = new char[hdr.json_metadata_bytes];
-  if (fread(p, 1, hdr.json_metadata_bytes, fp) != hdr.json_metadata_bytes)
-  {
-    delete[] p;
+  // if (cur_pos != hdr.json_metadata_offset)
+  // {
+  //   fseek(fp, hdr.json_metadata_offset, SEEK_SET);
+  //   cur_pos = hdr.json_metadata_offset;
+  // }
+  // // read the metadata
+  // char *p = new char[hdr.json_metadata_bytes];
+  // if (fread(p, 1, hdr.json_metadata_bytes, fp) != hdr.json_metadata_bytes)
+  // {
+  //   delete[] p;
+  //   return false;
+  // }
+  // p[hdr.json_metadata_bytes] = '\0';
+  std::string meta_str;
+  if (!flex_reader_ptr->read_at(hdr.json_metadata_offset, hdr.json_metadata_bytes, meta_str) || meta_str.size() != hdr.json_metadata_bytes) {
     return false;
   }
-  // p[hdr.json_metadata_bytes] = '\0';
-  cur_pos += hdr.json_metadata_bytes;
+  //cur_pos = hdr.json_metadata_offset + hdr.json_metadata_bytes;
 
-  std::string meta_str(p, hdr.json_metadata_bytes);
+  //std::string meta_str(p, hdr.json_metadata_bytes);
   std::string decomp_meta_str = decompress_func(meta_str, hdr.tile_compression);
 
   // load the metadata into a json object
   jmeta = nlohmann::json::parse(decomp_meta_str);
 
-  delete[] p;
+  //delete[] p;
 
   meta_read = true;
   return true;
 }
 
-size_t pmt_pts::fetch_tile(uint8_t z, uint32_t x, uint32_t y)
-{
-  uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
-  if (tileid2idx.find(tile_id) == tileid2idx.end())
-  {
-    error("Tile %u/%lu/%lu not found", z, x, y);
-  }
-  const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
-  // allocate memory for the tile data
-  char *tile_data = new char[e.length];
-  // move to the tile data offset
-  if (cur_pos != e.offset)
-  {
-    fseek(fp, e.offset, SEEK_SET);
-    cur_pos = e.offset;
-  }
-  // read the tile data
-  if (fread(tile_data, 1, e.length, fp) != e.length)
-  {
-    delete[] tile_data;
-    error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
-  }
-  // uncompress the tile data
-  std::string tile_comp_data_str(tile_data, e.length);
-  delete[] tile_data;
-  tile_data_str = decompress_func(tile_comp_data_str, hdr.tile_compression);
+// size_t pmt_pts::fetch_tile(uint8_t z, uint32_t x, uint32_t y)
+// {
+//   uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
+//   if (tileid2idx.find(tile_id) == tileid2idx.end())
+//   {
+//     error("Tile %u/%lu/%lu not found", z, x, y);
+//   }
+//   const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
+//   // allocate memory for the tile data
+//   char *tile_data = new char[e.length];
+//   // move to the tile data offset
+//   if (cur_pos != e.offset)
+//   {
+//     fseek(fp, e.offset, SEEK_SET);
+//     cur_pos = e.offset;
+//   }
+//   // read the tile data
+//   if (fread(tile_data, 1, e.length, fp) != e.length)
+//   {
+//     delete[] tile_data;
+//     error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+//   }
+//   // uncompress the tile data
+//   std::string tile_comp_data_str(tile_data, e.length);
+//   delete[] tile_data;
+//   tile_data_str = decompress_func(tile_comp_data_str, hdr.tile_compression);
 
-  return tile_data_str.size();
-}
+//   return tile_data_str.size();
+// }
 
 size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer)
 {
@@ -311,23 +354,32 @@ size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::str
   }
   const pmtiles::entry_zxy &e = tile_entries[tileid2idx[tile_id]];
   // allocate memory for the tile data
-  char *tile_data = new char[e.length];
+  //char *tile_data = new char[e.length];
   // move to the tile data offset
-  if (cur_pos != e.offset)
+  std::string tile_comp_data_str;
   {
-    fseek(fp, e.offset, SEEK_SET);
-    cur_pos = e.offset;
-  }
-  // read the tile data
-  if (fread(tile_data, 1, e.length, fp) != e.length)
-  {
-    delete[] tile_data;
-    error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+    std::lock_guard<std::mutex> lock(mtx);
+    // if (cur_pos != e.offset)
+    // {
+    //   fseek(fp, e.offset, SEEK_SET);
+    //   cur_pos = e.offset;
+    // }
+    // // read the tile data
+    // if (fread(tile_data, 1, e.length, fp) != e.length)
+    // {
+    //   delete[] tile_data;
+    //   error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+    // }
+    //cur_pos = e.offset;
+    if (!flex_reader_ptr->read_at(e.offset, e.length, tile_comp_data_str) || tile_comp_data_str.size() != e.length) {
+      error("Failed to read tile data %u/%lu/%lu with length %", z, x, y);
+    }
   }
   // uncompress the tile data
-  std::string tile_comp_data_str(tile_data, e.length);
-  delete[] tile_data;
+  //std::string tile_comp_data_str(tile_data, e.length);
+  //delete[] tile_data;
   buffer = decompress_func(tile_comp_data_str, hdr.tile_compression);
 
-  return tile_data_str.size();
+  //return tile_data_str.size();
+  return buffer.size();
 }

@@ -118,7 +118,7 @@ int32_t cmd_count_tiles(int32_t argc, char **argv)
     std::vector<std::map<uint64_t, uint64_t> > zoom2tile2count(pmt.hdr.max_zoom + 1);
     std::vector<std::map<uint64_t, uint64_t> > zoom2tile2sum(pmt.hdr.max_zoom + 1);
 
-    
+    std::string buffer;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];
@@ -133,8 +133,9 @@ int32_t cmd_count_tiles(int32_t argc, char **argv)
         }
 
         // notice("Fetching tile %d/%d/%d that intersects with the region", entry.z, entry.x, entry.y);
-        pmt.fetch_tile(entry.z, entry.x, entry.y);
-        uint64_t n_points = mvt.count_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
+        pmt.fetch_tile_to_buffer(entry.z, entry.x, entry.y, buffer);
+        uint64_t n_points = mvt.count_points(buffer); //, entry.z, entry.x, entry.y);
+        //uint64_t n_points = mvt.count_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
         //notice("Tile %d/%d/%d has %llu points", entry.z, entry.x, entry.y, n_points);
 
         uint64_t xy = (((uint64_t)entry.x) << 32 | (uint64_t)entry.y);

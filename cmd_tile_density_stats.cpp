@@ -60,6 +60,7 @@ int32_t cmd_tile_density_stats(int32_t argc, char **argv)
     // output format
     std::string out_tsvf;
     std::string count_field("gn");
+    std::string feature_field("gene");
     bool compact = false;
 
     paramList pl;
@@ -68,6 +69,7 @@ int32_t cmd_tile_density_stats(int32_t argc, char **argv)
     LONG_PARAM_GROUP("Input options", NULL)
     LONG_STRING_PARAM("in", &pmtilesf, "Input PMTiles file")
     LONG_STRING_PARAM("count", &count_field, "Field name for transcript counts")
+    LONG_STRING_PARAM("feature", &feature_field, "Field name for feature name")
 
     LONG_PARAM_GROUP("Output options", NULL)
     LONG_PARAM("compact", &compact, "Skip writing each tile")
@@ -131,6 +133,7 @@ int32_t cmd_tile_density_stats(int32_t argc, char **argv)
 
     uint64_t n_total = 0;
     std::vector< std::map<uint64_t, uint64_t> > res2pts2nbins(MAX_BITS);
+    std::string tile_buffer;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];
@@ -141,9 +144,12 @@ int32_t cmd_tile_density_stats(int32_t argc, char **argv)
             continue;
         }
         // notice("Fetching tile %d/%d/%d that intersects with the region", entry.z, entry.x, entry.y);
-        pmt.fetch_tile(entry.z, entry.x, entry.y);
+        //pmt.fetch_tile(entry.z, entry.x, entry.y);
+        pmt.fetch_tile_to_buffer(entry.z, entry.x, entry.y, tile_buffer);
         std::vector<int32_t> xs, ys, cnts;
-        int32_t n_pts = mvt.decode_points_xycnt(pmt.tile_data_str, count_field, xs, ys, cnts);
+        std::vector<std::string> features;
+        //int32_t n_pts = mvt.decode_points_xycnt(pmt.tile_data_str, count_field, xs, ys, cnts);
+        int32_t n_pts = mvt.decode_points_xycnt_feature(tile_buffer, count_field, feature_field, xs, ys, cnts, features);
 
         tile_density_stats tds;
         for (int32_t j = 0; j < n_pts; ++j)
