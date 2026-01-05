@@ -91,7 +91,7 @@ public:
         double ymax = std::numeric_limits<double>::min();
         for (auto &vertex : vertices)
         {
-            notice("Vertex: %lf, %lf, (%lg %lg %lg %lg)", vertex.x, vertex.y, xmin, ymin, xmax, ymax);
+            //notice("Vertex: %lf, %lf, (%lg %lg %lg %lg)", vertex.x, vertex.y, xmin, ymin, xmax, ymax);
             if (vertex.x < xmin)
                 xmin = vertex.x;
             if (vertex.x > xmax)
@@ -128,6 +128,7 @@ inline int32_t add_feature_to_polygons(const nlohmann::json &feature, std::vecto
         }
 
         // We only support the exterior ring (index 0); holes are not supported.
+        uint64_t n_vertices = 0;
         for (size_t ringIndex = 0; ringIndex < coords.size(); ++ringIndex) {
             if (ringIndex > 0) {
                 error("Holes are not supported");
@@ -145,9 +146,11 @@ inline int32_t add_feature_to_polygons(const nlohmann::json &feature, std::vecto
                     error("Invalid position: expected [x, y] numbers");
                 }
                 polygon.vertices.push_back(point_t(pt[0].get<double>(), pt[1].get<double>()));
+                n_vertices++;
             }
             polygons.push_back(std::move(polygon));
         }
+        notice("Total of %llu vertices added for a Polygon", n_vertices);
     };
 
     if (type == "Polygon") {
@@ -228,15 +231,19 @@ inline int32_t load_polygons_from_geojson(const char *filename, std::vector<Poly
             error("Invalid GeoJSON %s: expected 'FeatureCollection' or 'Feature' type", filename);
         }
 
+        uint64_t n_features = 0;
         if (json["type"] == "FeatureCollection") {
             for (const auto& feature : json["features"]) {
                 add_feature_to_polygons(feature, polygons);
+                n_features++;
             }
         } else if (json["type"] == "Feature") {
             add_feature_to_polygons(json, polygons);
+            n_features++;
         } else {
             error("Invalid GeoJSON %s: Cannot find 'Feature' of 'FeatureCollection' type", filename);
         }
+        notice("Loaded %llu features, total of %zu polygons", n_features, polygons.size());
     }
     catch (const std::exception &e) {
         error("Error loading GeoJSON %s: %s", filename, e.what());

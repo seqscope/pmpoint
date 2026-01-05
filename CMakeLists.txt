@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8...3.23)
-project(pmpoint)
+project(pmpoint VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,39 @@ elseif(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++14")
 endif()
 #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -pthread -std=c++14")
+
+configure_file(
+    "${CMAKE_SOURCE_DIR}/version.h.in"
+    "${CMAKE_BINARY_DIR}/generated/version.h"
+)
+
+
+include_directories("${CMAKE_BINARY_DIR}/generated")
+
+if(APPLE)
+    # On macOS, CMake typically finds Apple Clang by default.
+    # This block can be used for Apple-specific settings or checks.
+
+    # It's good practice to check if the identified C++ compiler is Clang.
+    # CMAKE_CXX_COMPILER_ID is set by CMake after it identifies the compiler.
+    # Common IDs for Clang on macOS are "Clang" or "AppleClang".
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "AppleClang")
+        message(STATUS "Confirmed Clang/AppleClang C++ compiler for macOS: ${CMAKE_CXX_COMPILER}")
+        # You can add Clang-specific compiler flags here if necessary, for example:
+        # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++") 
+        # Note: -stdlib=libc++ is often the default for Clang on macOS.
+    else()
+        message(WARNING "Expected Clang or AppleClang compiler on macOS, but found C++ compiler ID: '${CMAKE_CXX_COMPILER_ID}' with path '${CMAKE_CXX_COMPILER}'. The project is optimized for Clang; please ensure your environment is configured to use Clang if you encounter issues. If you are using homebrew for example, you may want to run cmake with additional option like '-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++'. ")
+    endif()
+
+    # You can also set macOS specific deployment target if needed:
+    # set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum macOS deployment version")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1 -mpclmul -fno-strict-aliasing")
+endif()
+
+# Option to enable finding and linking with libdeflate
+option(USE_LIBDEFLATE "Enable if htslib was built with libdeflate support and linking against it is required" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 
@@ -38,6 +71,9 @@ find_library(QGEN_LIBRARIES libqgen.a  HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib
 if(NOT QGEN_LIBRARIES)
     message(FATAL_ERROR "libqgen QGEN_LIBRARIES not found")
 endif()
+
+# find_package(PNG REQUIRED)
+# find_package(ZLIB REQUIRED)
 
 message(STATUS ${QGEN_LIBRARIES})
 
@@ -129,19 +165,36 @@ else()
     set(LZMA ${LZMA_LIBRARIES})
 endif()
 
-find_library(DEFLATELIB deflate libdeflate.a HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/ ../libdeflate/)
-if(NOT DEFLATELIB)
-    message(FATAL_ERROR "libdeflate library not found")
+set(LIBDEFLATE_LIBRARY "") # Initialize variable
+
+if(USE_LIBDEFLATE)
+    find_library(DEFLATELIB_PATH deflate libdeflate.a HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/ ../libdeflate/)
+    if(NOT DEFLATELIB_PATH)
+        message(WARNING "USE_LIBDEFLATE is ON, but libdeflate (libdeflate.a, libdeflate.so, libdeflate.dylib, etc.) was not found. "
+        "If your htslib requires it, linking may fail or you might encounter runtime errors. "
+        "Ensure libdeflate is installed in a standard location, or provide its path via CMAKE_PREFIX_PATH or LIBDEFLATE_DIR (environment variable pointing to the installation prefix).")
+    else()
+        set(DEFLATELIB ${DEFLATELIB_PATH})
+        message(STATUS "Found libdeflate for linking: ${DEFLATELIB}")
+    endif()
 endif()
+
 
 find_library(CRYPTOLIB crypto HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/)
 if(NOT CRYPTOLIB)
     message(FATAL_ERROR "libcrypto library not found")
 endif()
 
-find_package(Threads REQUIRED)
+# # add PNG library
+# find_library(PNGLIB png HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/)
+# if(NOT PNGLIB)
+#     message(FATAL_ERROR "libpng library not found")
+# endif()
 
-TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${DEFLATELIB} ${CRYPTOLIB} Threads::Threads)
+#TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${DEFLATELIB} ${CRYPTOLIB} "${OpenMP_CXX_FLAGS}")
+#target_compile_options(${APP_EXE} PRIVATE "${OpenMP_CXX_FLAGS}")
+#TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${CRYPTOLIB})
+TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${CRYPTOLIB} ${DEFLATELIB})
 target_compile_options(${APP_EXE} PRIVATE)
 
 install(TARGETS ${APP_EXE} RUNTIME DESTINATION bin)

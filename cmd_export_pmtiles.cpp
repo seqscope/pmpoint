@@ -105,13 +105,27 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
     pmt_utils::pmt_pt_t g_min_pt(zoom, min_pt.tile_x, min_pt.tile_y, min_pt.local_x, min_pt.local_y);
     pmt_utils::pmt_pt_t g_max_pt(zoom, max_pt.tile_x, max_pt.tile_y, max_pt.local_x, max_pt.local_y);
 
-    notice("xmin = %.3f, ymin = %.3f", xmin, ymin);
-    notice("xmax = %.3f, ymax = %.3f", xmax, ymax);
-    notice("min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", min_pt.zoom, min_pt.global_x, min_pt.global_y, min_pt.tile_x, min_pt.tile_y, min_pt.local_x, min_pt.local_y);
-    notice("max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", max_pt.zoom, max_pt.global_x, max_pt.global_y, max_pt.tile_x, max_pt.tile_y, max_pt.local_x, max_pt.local_y);
-    notice("g_min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_min_pt.zoom, g_min_pt.global_x, g_min_pt.global_y, g_min_pt.tile_x, g_min_pt.tile_y, g_min_pt.local_x, g_min_pt.local_y);
-    notice("g_max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_max_pt.zoom, g_max_pt.global_x, g_max_pt.global_y, g_max_pt.tile_x, g_max_pt.tile_y, g_max_pt.local_x, g_max_pt.local_y);
-    // exit(-1);
+    int xmin_class = std::fpclassify(xmin);
+    int xmax_class = std::fpclassify(xmax);
+    int ymin_class = std::fpclassify(ymin);
+    int ymax_class = std::fpclassify(ymax);
+
+    bool has_boundary = !((xmin_class == FP_INFINITE || xmin_class == FP_NAN) &&
+                          (xmax_class == FP_INFINITE || xmax_class == FP_NAN) &&
+                          (ymin_class == FP_INFINITE || ymin_class == FP_NAN) &&
+                          (ymax_class == FP_INFINITE || ymax_class == FP_NAN));
+
+    if ( has_boundary ) {
+        notice("Bounding Box: [(%.3f, %.3f), (%.3f, %.3f)]", xmin, ymin, xmax, ymax);
+        notice("min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", min_pt.zoom, min_pt.global_x, min_pt.global_y, min_pt.tile_x, min_pt.tile_y, min_pt.local_x, min_pt.local_y);
+        notice("max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", max_pt.zoom, max_pt.global_x, max_pt.global_y, max_pt.tile_x, max_pt.tile_y, max_pt.local_x, max_pt.local_y);
+        notice("g_min_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_min_pt.zoom, g_min_pt.global_x, g_min_pt.global_y, g_min_pt.tile_x, g_min_pt.tile_y, g_min_pt.local_x, g_min_pt.local_y);
+        notice("g_max_pt: %u %.3lf %.3lf -- %lu %lu %.3lf %.3lf", g_max_pt.zoom, g_max_pt.global_x, g_max_pt.global_y, g_max_pt.tile_x, g_max_pt.tile_y, g_max_pt.local_x, g_max_pt.local_y);
+        // exit(-1);
+    }
+    else {
+        notice("No bounding box is set; all tiles at zoom level %d will be considered", zoom);
+    }
 
     // load geojson
     std::vector<Polygon> polygons;
@@ -171,20 +185,11 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
     pt_dataframe df;
     mvt_pts_filt mvtfilt(&df);
 
-    int xmin_class = std::fpclassify(xmin);
-    int xmax_class = std::fpclassify(xmax);
-    int ymin_class = std::fpclassify(ymin);
-    int ymax_class = std::fpclassify(ymax);
-
-    bool has_boundary = !((xmin_class == FP_INFINITE || xmin_class == FP_NAN) &&
-                          (xmax_class == FP_INFINITE || xmax_class == FP_NAN) &&
-                          (ymin_class == FP_INFINITE || ymin_class == FP_NAN) &&
-                          (ymax_class == FP_INFINITE || ymax_class == FP_NAN));
-
     bool tsv_hdr_written = false;
     uint64_t n_written = 0;
     std::vector<Polygon *> tile_polygons;
     std::string tile_buffer;
+    uint64_t n_skipped_tiles = 0;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];
@@ -201,7 +206,7 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
         pmt_utils::tiletoepsg3857(entry.x+1, entry.y+1, entry.z, &tile_max_pt.x, &tile_min_pt.y);
         Rectangle tile_bbox(tile_min_pt.x, tile_min_pt.y, tile_max_pt.x, tile_max_pt.y);
 
-        notice("Checking tile %d/%d/%d, bbox = [(%.5lf, %.5lf) (%.5lf, %.5lf)]", pmt.tile_entries[i].z, pmt.tile_entries[i].x, pmt.tile_entries[i].y, tile_min_pt.x, tile_min_pt.y, tile_max_pt.x, tile_max_pt.y);
+        //notice("Checking tile %d/%d/%d, bbox = [(%.5lf, %.5lf) (%.5lf, %.5lf)]", pmt.tile_entries[i].z, pmt.tile_entries[i].x, pmt.tile_entries[i].y, tile_min_pt.x, tile_min_pt.y, tile_max_pt.x, tile_max_pt.y);
 
         // check if the boundary was set
         // note that the y-axis is inverted, so min/max is swapped in y when comparing the tiles
@@ -210,8 +215,12 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
         {
             if (entry.x < min_pt.tile_x || entry.x > max_pt.tile_x || entry.y < max_pt.tile_y || entry.y > min_pt.tile_y)
             {
-                notice("Skipping (%lu, %lu) as it is outside the rectangle defined by (%lu, %lu) -- (%lu, %lu)",
-                       entry.x, entry.y, min_pt.tile_x, min_pt.tile_y, max_pt.tile_x, max_pt.tile_y);
+                //notice("Skipping (%lu, %lu) as it is outside the rectangle defined by (%lu, %lu) -- (%lu, %lu)",
+                //       entry.x, entry.y, min_pt.tile_x, min_pt.tile_y, max_pt.tile_x, max_pt.tile_y);
+                n_skipped_tiles++;
+                if ( n_skipped_tiles % 100 == 1 ) {
+                    notice("Skipped %lu/%d tiles of total %zu tiles...", n_skipped_tiles, i+1, pmt.tile_entries.size());
+                }
                 continue;
             }
             else
@@ -263,7 +272,11 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
             }
             if (tile_polygons.size() == 0)
             {
-                notice("Skipping (%lu, %lu) as it does not intersect with any of the polygons", entry.x, entry.y);
+                //notice("Skipping (%lu, %lu) as it does not intersect with any of the polygons", entry.x, entry.y);
+                n_skipped_tiles++;
+                if ( n_skipped_tiles % 100 == 1 ) {
+                    notice("Skipped %lu/%d tiles of total %zu tiles...", n_skipped_tiles, i+1, pmt.tile_entries.size());
+                }
                 continue;
             }
             mvtfilt.set_polygon_filt(tile_polygons);

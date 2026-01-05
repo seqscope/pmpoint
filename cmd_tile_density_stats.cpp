@@ -59,7 +59,7 @@ int32_t cmd_tile_density_stats(int32_t argc, char **argv)
 
     // output format
     std::string out_tsvf;
-    std::string count_field("gn");
+    std::string count_field("count");
     std::string feature_field("gene");
     bool compact = false;
 
