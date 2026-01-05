@@ -50,3 +50,7 @@ bin
 .DS_Store
 site/
 site/*
+.vscode/
+.vscode/*
+bkup/
+bkup/*
