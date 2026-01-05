@@ -16,4 +16,6 @@
 #include "qgenlib/qgen_error.h"
 #include "qgenlib/hts_utils.h"
 
+#include "version.h"
+
 #endif // __PMPOINT_H
