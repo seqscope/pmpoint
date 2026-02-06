@@ -84,6 +84,7 @@ set(SOURCE_FILES
     cmd_tile_density_stats.cpp
     cmd_count_tiles.cpp
     cmd_export_pmtiles.cpp
+    cmd_export_polygon_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
     flex_io.h
     flex_io.cpp
@@ -92,6 +93,8 @@ set(SOURCE_FILES
     pmt_utils.cpp
     mvt_pts.h
     mvt_pts.cpp
+    mvt_polygons.h
+    mvt_polygons.cpp
     pmt_pts.h
     pmt_pts.cpp
     pmpoint.cpp

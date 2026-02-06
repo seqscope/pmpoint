@@ -10,51 +10,51 @@
 
 #include "qgenlib/qgen_error.h"
 
-class print_value
-{
-public:
-    std::string operator()(std::vector<mapbox::feature::value> val)
-    {
-        return "vector";
-    }
+// class print_value
+// {
+// public:
+//     std::string operator()(std::vector<mapbox::feature::value> val)
+//     {
+//         return "vector";
+//     }
 
-    std::string operator()(std::unordered_map<std::string, mapbox::feature::value> val)
-    {
-        return "unordered_map";
-    }
+//     std::string operator()(std::unordered_map<std::string, mapbox::feature::value> val)
+//     {
+//         return "unordered_map";
+//     }
 
-    std::string operator()(mapbox::feature::null_value_t val)
-    {
-        return "null";
-    }
+//     std::string operator()(mapbox::feature::null_value_t val)
+//     {
+//         return "null";
+//     }
 
-    std::string operator()(std::nullptr_t val)
-    {
-        return "nullptr";
-    }
+//     std::string operator()(std::nullptr_t val)
+//     {
+//         return "nullptr";
+//     }
 
-    std::string operator()(uint64_t val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(int64_t val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(double val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(std::string const &val)
-    {
-        return val;
-    }
+//     std::string operator()(uint64_t val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(int64_t val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(double val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(std::string const &val)
+//     {
+//         return val;
+//     }
 
-    std::string operator()(bool val)
-    {
-        return val ? "true" : "false";
-    }
-};
+//     std::string operator()(bool val)
+//     {
+//         return val ? "true" : "false";
+//     }
+// };
 
 int32_t mvt_pts::decode_points_xycnt_feature(const std::string &_buffer, const std::string& colname_cnt, const std::string& colname_feature, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts, std::vector<std::string>& features)
 {

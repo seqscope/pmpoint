@@ -2,6 +2,7 @@
 #define __PMT_UTILS_H
 
 #include <cstdint>
+#include <vector>
 #include "ext/PMTiles/pmtiles.hpp"
 
 // functions useful for projection
@@ -30,6 +31,23 @@ namespace pmt_utils
         pmt_pt_t(uint8_t _zoom, int64_t _tx, int64_t _ty, double _lx, double _ly)
         {
             set_tile_coord(_zoom, _tx, _ty, _lx, _ly);
+        }
+    };
+
+    class pmt_polygon_t {
+    public:
+        std::vector<pmt_pt_t> points;
+
+        pmt_polygon_t() {}
+
+        void add_global_coord(uint8_t _zoom, double _gx, double _gy) {
+            points.push_back(pmt_pt_t(_zoom, _gx, _gy));
+        }
+        void add_tile_coord(uint8_t _zoom, int64_t _tx, int64_t _ty, int32_t _lx = 0, double _ly = 0) {
+            points.push_back(pmt_pt_t(_zoom, _tx, _ty, _lx, _ly));
+        }
+        void add_point(const pmt_pt_t& pt) {
+            points.push_back(pt);
         }
     };
 
