@@ -174,6 +174,7 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
 
     // load geojson
     std::vector<Polygon> polygons;
+    //std::vector<pmt_utils::pmt_polygon_t> polygons;
     if (!geojsonf.empty())
     {
         int32_t npolygons = load_polygons_from_geojson(geojsonf.c_str(), polygons);
@@ -234,8 +235,10 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
     bool tsv_hdr_written = false;
     uint64_t n_written = 0;
     std::vector<Polygon *> tile_polygons;
+    //std::vector<pmt_utils::pmt_polygon_t> tile_polygons;
     std::string tile_buffer;
     uint64_t n_skipped_tiles = 0;
+    uint64_t n_tiles_processed = 0;
     for (int32_t i = 0; i < pmt.tile_entries.size(); ++i)
     {
         pmtiles::entry_zxy &entry = pmt.tile_entries[i];
@@ -338,6 +341,7 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
         //mvtfilt.decode_points(pmt.tile_data_str, entry.z, entry.x, entry.y);
         pmt.fetch_tile_to_buffer(entry.z, entry.x, entry.y, tile_buffer);
         mvtfilt.decode_polygons_df(tile_buffer, entry.z, entry.x, entry.y, df);
+        n_tiles_processed++;
 
         if (tsv_wh != NULL)
         {
@@ -367,14 +371,18 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
                     gx += pts[j].global_x;
                     gy += pts[j].global_y;
                 }
-                gx /= pts.size();
-                gy /= pts.size();
+                // make sure that polygon is closed
+                if (fabs(pts.front().global_x - pts.back().global_x) > 1e-6 || fabs(pts.front().global_y - pts.back().global_y) > 1e-6) {
+                    error("Polygon is not closed. (%lg, %lg) != (%lg, %lg)", pts.front().global_x, pts.front().global_y, pts.back().global_x, pts.back().global_y);
+                }
+                gx /= (pts.size()-1);
+                gy /= (pts.size()-1);
                 //notice("%.*f\t%.*f", precision, gx, precision, gy);
                 hprintf(tsv_wh, "%.*f\t%.*f", precision, gx, precision, gy);
                 if ( write_vertices ) {
                     hprintf(tsv_wh, "\t[");
                     for(int32_t j=0; j < pts.size()-1; ++j) {
-                        hprintf(tsv_wh, "[%.*f,%.*f]", precision, gx, precision, gy);
+                        hprintf(tsv_wh, "[%.*f,%.*f]", precision, pts[j].global_x, precision, pts[j].global_y);
                         if (j < pts.size() - 2) {
                             hprintf(tsv_wh, ",");
                         }
@@ -419,7 +427,7 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
         //     }
         // }
         if ( (n_written / verbose_freq) != (( df.polygons.size() + n_written ) / verbose_freq) ) {
-            notice("Writing %llu polygons in total", n_written + df.polygons.size());
+            notice("Writing %llu polygons in total, processing %llu tiles and skipping %llu tiles", n_written + df.polygons.size(), n_tiles_processed, n_skipped_tiles);
         }
         n_written += df.polygons.size();
         df.clear_values();
@@ -435,7 +443,7 @@ int32_t cmd_export_polygon_pmtiles(int32_t argc, char **argv)
         hts_close(tsv_wh);
     }
 
-    notice("Finished writing %llu polygons in total", n_written);
+    notice("Finished writing %llu polygons in total, processing %llu tiles and skipping %llu tiles", n_written, n_tiles_processed, n_skipped_tiles);
 
     notice("Analysis Finished");
 

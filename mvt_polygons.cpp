@@ -104,6 +104,7 @@ bool mvt_polygons_filt::decode_polygons_df(const std::string &_buffer, uint8_t z
     double scale_factor = pmt_utils::epsg3857_scale_factor(zoom);
     double offset_x, offset_y;
     pmt_utils::tiletoepsg3857(tile_x, tile_y, zoom, &offset_x, &offset_y);
+    notice("tile_x = %ld, tile_y = %ld, zoom = %d, offset_x = %.5f, offset_y = %.5f", tile_x, tile_y, zoom, offset_x, offset_y);
     for (auto const &name : p_tile->layerNames())
     {
         const mapbox::vector_tile::layer layer = p_tile->getLayer(name);
@@ -133,40 +134,42 @@ bool mvt_polygons_filt::decode_polygons_df(const std::string &_buffer, uint8_t z
                     error("Empty polygon found");
                 }
 
-                // obtain the polyhons
-                pmt_utils::pmt_polygon_t poly;
-                pmt_utils::pmt_pt_t ul, lr;
+                // obtain the polygons
+                pmt_utils::pmt_polygon_t poly(zoom);
+                // pmt_utils::pmt_pt_t ul, lr;
                 for (auto const &pt : geom[0]) {
                     //  pmt_utils::pmt_pt_t pt(zoom, offset_x + scale_factor * geom[0][0].x, offset_y - scale_factor * geom[0][0].y);
-                    poly.add_global_coord(zoom, offset_x + scale_factor * pt.x, offset_y - scale_factor * pt.y);
+                    poly.add_global_coord(offset_x + scale_factor * pt.x, offset_y - scale_factor * pt.y);
+                    //poly.add_point(pmt_utils::pmt_pt_t(zoom, offset_x + scale_factor * pt.x, offset_y - scale_factor * pt.y));
 
-                    //otice("Adding point: %.5f, %.5f", poly.points.back().global_x, poly.points.back().global_y);
+                    //notice("Adding point: %.5f, %.5f", poly.points.back().global_x, poly.points.back().global_y);
+                    //notice("Adding point: %d, %d, %.5f, %.5f, %.5f, (%.5f, %.5f)", pt.x, pt.y, offset_x, offset_y, scale_factor, poly.points.back().global_x, poly.points.back().global_y);
 
-                    // update the bounding box 
-                    if ( poly.points.size() == 1 ) {
-                        ul = poly.points[0];
-                        lr = poly.points[0];
-                    }
-                    else {
-                        if ( poly.points.back().global_x < ul.global_x ) {
-                            ul.global_x = poly.points.back().global_x;
-                        }
-                        if ( poly.points.back().global_y < ul.global_y ) {
-                            ul.global_y = poly.points.back().global_y;
-                        }
-                        if ( poly.points.back().global_x > lr.global_x ) {
-                            lr.global_x = poly.points.back().global_x;
-                        }
-                        if ( poly.points.back().global_y > lr.global_y ) {
-                            lr.global_y = poly.points.back().global_y;
-                        }
-                    }
+                    // // update the bounding box 
+                    // if ( poly.points.size() == 1 ) {
+                    //     ul = poly.points[0];
+                    //     lr = poly.points[0];
+                    // }
+                    // else {
+                    //     if ( poly.points.back().global_x < ul.global_x ) {
+                    //         ul.global_x = poly.points.back().global_x;
+                    //     }
+                    //     if ( poly.points.back().global_y < ul.global_y ) {
+                    //         ul.global_y = poly.points.back().global_y;
+                    //     }
+                    //     if ( poly.points.back().global_x > lr.global_x ) {
+                    //         lr.global_x = poly.points.back().global_x;
+                    //     }
+                    //     if ( poly.points.back().global_y > lr.global_y ) {
+                    //         lr.global_y = poly.points.back().global_y;
+                    //     }
+                    // }
                 }
 
                 // check the filtering criteria
                 if (p_min_pt != NULL)
                 {
-                    if (lr.global_x < p_min_pt->global_x || lr.global_y < p_min_pt->global_y)
+                    if (poly.bbox.lr.global_x < p_min_pt->global_x || poly.bbox.lr.global_y < p_min_pt->global_y)
                     {
                         ++nskip;
                         continue;
@@ -174,7 +177,7 @@ bool mvt_polygons_filt::decode_polygons_df(const std::string &_buffer, uint8_t z
                 }
                 if (p_max_pt != NULL)
                 {
-                    if (ul.global_x > p_max_pt->global_x || ul.global_y > p_max_pt->global_y)
+                    if (poly.bbox.ul.global_x > p_max_pt->global_x || poly.bbox.ul.global_y > p_max_pt->global_y)
                     {
                         ++nskip;
                         continue;
@@ -185,31 +188,44 @@ bool mvt_polygons_filt::decode_polygons_df(const std::string &_buffer, uint8_t z
                 // check overlaps based on the bounding box first, then check the actual polygon
                 if (polygons.size() > 0)
                 {
-                    error("Polygon filtering is not implemented yet.");
-                    // bool found = false;
-                    // for (auto &p_polygon : polygons)
-                    // {
-                    //     if (p_polygon->contains_point(ul.global_x, ul.global_y))
-                    //     {
-                    //         found = true;
-                    //         break;
-                    //     }
-                    //     if (p_polygon->contains_point(lr.global_x, lr.global_y))
-                    //     {
-                    //         found = true;
-                    //         break;
-                    //     }
-                    // }
-                    // if (!found)
-                    // {
-                    //     ++nskip;
-                    //     continue;
-                    // }
+                    //error("Polygon filtering is not implemented yet.");
+                    bool found = false;
+                    for (auto &p_polygon : polygons)
+                    {
+                        bool ul_in = p_polygon->contains_point(poly.bbox.ul.global_x, poly.bbox.ul.global_y);
+                        bool lr_in = p_polygon->contains_point(poly.bbox.lr.global_x, poly.bbox.lr.global_y);
+                        if (ul_in && lr_in)
+                        {
+                            found = true;
+                            break;
+                        }
+                        // if any point in the polygon is inside the bounding box, then it is a match 
+                        for (auto &pt : poly.points)
+                        {
+                            if (p_polygon->contains_point(pt.global_x, pt.global_y))
+                            {
+                                found = true;
+                                break;
+                            }
+                        } 
+                        if (found)
+                        {
+                            break;
+                        }
+                    }
+                    if (!found) // no match - not quite exact, but close enough
+                    {
+                        ++nskip;
+                        continue;
+                    }
                 }
 
                 ++npass;
 
                 //df.points.push_back(pt);
+                // for (auto &pt : poly.points) {
+                //     notice("Adding point: %.5f, %.5f", pt.global_x, pt.global_y);
+                // }
                 df.polygons.push_back(poly);
 
                 // obtain properties;

@@ -177,6 +177,8 @@ bool mvt_pts_filt::decode_points_df(const std::string &_buffer, uint8_t zoom, in
                 //pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, 0, 0);
                 //notice("Processing point (%.3f %.3f) at z=%u, (%llu, %llu), (%.3f, %.3f)", pt.global_x, pt.global_y, pt.zoom, pt.tile_x, pt.tile_y, pt.local_x, pt.local_y);
 
+                notice("Adding point: %d, %d, %.5f, %.5f, %.5f, (%.5f, %.5f)", geom[0][0].x, geom[0][0].y, offset_x, offset_y, scale_factor, pt.global_x, pt.global_y);
+
                 // check the filtering criteria
                 if (p_min_pt != NULL)
                 {

@@ -107,6 +107,8 @@ class mvt_polygons_filt
 {
 public:
     std::vector<Polygon*> polygons;
+    //std::vector<Rectangle> bboxes;
+    //std::vector<pmt_utils::pmt_polygon_t> polygons;
     pmt_utils::pmt_pt_t *p_min_pt = NULL;
     pmt_utils::pmt_pt_t *p_max_pt = NULL;
     //mapbox::vector_tile::buffer *p_tile = NULL;
@@ -122,7 +124,15 @@ public:
     //inline void set_df(pt_dataframe *p) { p_df = p; }
     inline void set_min_filt(pmt_utils::pmt_pt_t *_min_pt) { p_min_pt = _min_pt; }
     inline void set_max_filt(pmt_utils::pmt_pt_t *_max_pt) { p_max_pt = _max_pt; }
-    inline void set_polygon_filt(std::vector<Polygon*> &_polygons) { polygons = _polygons; }
+    inline void set_polygon_filt(std::vector<Polygon*> &_polygons) { 
+        polygons = _polygons; 
+        // bboxes.clear();
+        // for(int32_t i = 0; i < polygons.size(); ++i)
+        // {
+        //     bboxes.push_back(polygons[i]->get_bounding_box());
+        // }
+    }
+    //inline void set_polygon_filt(std::vector<pmt_utils::pmt_polygon_t> &_polygons) { polygons = _polygons; }
     // inline void set_geojson_polygon_filt(const char *jsonf)
     // {
     //     int32_t npolygons = load_polygons_from_geojson(jsonf, polygons);

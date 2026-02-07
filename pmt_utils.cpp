@@ -28,7 +28,7 @@ void pmt_utils::pmt_pt_t::set_global_coord(uint8_t _zoom, double _gx, double _gy
     //}
 }
 
-void pmt_utils::pmt_pt_t::set_tile_coord(uint8_t _zoom, int64_t _tx, int64_t _ty, int32_t _lx, double _ly)
+void pmt_utils::pmt_pt_t::set_tile_coord(uint8_t _zoom, int64_t _tx, int64_t _ty, double _lx, double _ly)
 {
     zoom = _zoom;
     tile_x = _tx;
