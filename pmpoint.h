@@ -1,6 +1,7 @@
 #ifndef __PMPOINT_H
 #define __PMPOINT_H
 
+#include "ext/nlohmann/json.hpp"
 #include <getopt.h>
 #include <cstdio>
 #include <vector>

@@ -83,6 +83,7 @@ set(SOURCE_FILES
     cmd_tile_density_stats_mt.cpp
     cmd_tile_density_stats.cpp
     cmd_count_tiles.cpp
+    cmd_build_pyramid_pmtiles.cpp
     cmd_export_pmtiles.cpp
     cmd_export_polygon_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
@@ -156,7 +157,9 @@ find_package (BZip2)
 if (NOT BZIP2_FOUND)
     message(FATAL_ERROR "libbz2 library not found")
 else()
-    include_directories(${BZIP2_INCLUDE_DIRS})
+    if(NOT APPLE AND NOT BZIP2_INCLUDE_DIRS MATCHES "/usr/include")
+        include_directories(SYSTEM ${BZIP2_INCLUDE_DIRS})
+    endif()
     set(BZIP2 ${BZIP2_LIBRARIES})
 endif()
 

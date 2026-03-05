@@ -1,8 +1,9 @@
 #ifndef __PMT_PTS__H
 #define __PMT_PTS__H
 
-#include "ext/PMTiles/pmtiles.hpp"
 #include "ext/nlohmann/json.hpp"
+#include <cmath>
+#include "ext/PMTiles/pmtiles.hpp"
 #include "flex_io.h"
 #include <mutex>
 #include <thread>
