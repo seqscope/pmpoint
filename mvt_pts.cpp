@@ -10,51 +10,51 @@
 
 #include "qgenlib/qgen_error.h"
 
-class print_value
-{
-public:
-    std::string operator()(std::vector<mapbox::feature::value> val)
-    {
-        return "vector";
-    }
+// class print_value
+// {
+// public:
+//     std::string operator()(std::vector<mapbox::feature::value> val)
+//     {
+//         return "vector";
+//     }
 
-    std::string operator()(std::unordered_map<std::string, mapbox::feature::value> val)
-    {
-        return "unordered_map";
-    }
+//     std::string operator()(std::unordered_map<std::string, mapbox::feature::value> val)
+//     {
+//         return "unordered_map";
+//     }
 
-    std::string operator()(mapbox::feature::null_value_t val)
-    {
-        return "null";
-    }
+//     std::string operator()(mapbox::feature::null_value_t val)
+//     {
+//         return "null";
+//     }
 
-    std::string operator()(std::nullptr_t val)
-    {
-        return "nullptr";
-    }
+//     std::string operator()(std::nullptr_t val)
+//     {
+//         return "nullptr";
+//     }
 
-    std::string operator()(uint64_t val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(int64_t val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(double val)
-    {
-        return std::to_string(val);
-    }
-    std::string operator()(std::string const &val)
-    {
-        return val;
-    }
+//     std::string operator()(uint64_t val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(int64_t val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(double val)
+//     {
+//         return std::to_string(val);
+//     }
+//     std::string operator()(std::string const &val)
+//     {
+//         return val;
+//     }
 
-    std::string operator()(bool val)
-    {
-        return val ? "true" : "false";
-    }
-};
+//     std::string operator()(bool val)
+//     {
+//         return val ? "true" : "false";
+//     }
+// };
 
 int32_t mvt_pts::decode_points_xycnt_feature(const std::string &_buffer, const std::string& colname_cnt, const std::string& colname_feature, std::vector<int32_t>& xs, std::vector<int32_t>& ys, std::vector<int32_t>& cnts, std::vector<std::string>& features)
 {
@@ -176,6 +176,8 @@ bool mvt_pts_filt::decode_points_df(const std::string &_buffer, uint8_t zoom, in
                 //pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, geom[0][0].x/scale_factor, geom[0][0].y/scale_factor);
                 //pmt_utils::pmt_pt_t pt(zoom, tile_x, tile_y, 0, 0);
                 //notice("Processing point (%.3f %.3f) at z=%u, (%llu, %llu), (%.3f, %.3f)", pt.global_x, pt.global_y, pt.zoom, pt.tile_x, pt.tile_y, pt.local_x, pt.local_y);
+
+                notice("Adding point: %d, %d, %.5f, %.5f, %.5f, (%.5f, %.5f)", geom[0][0].x, geom[0][0].y, offset_x, offset_y, scale_factor, pt.global_x, pt.global_y);
 
                 // check the filtering criteria
                 if (p_min_pt != NULL)

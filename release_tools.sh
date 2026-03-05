@@ -30,9 +30,9 @@ echo "Updating submodules to ensure fresh content..."
 git submodule update --init --recursive
 
 # 5. CREATE STAGED TARBALL (Fixes the root directory issue)
-RELEASE_FILE="spatula-v${VERSION}-full.tar.gz"
-ROOT_FOLDER="spatula-v${VERSION}"
-STAGING_DIR="/tmp/spatula_release_build"
+RELEASE_FILE="pmpoint-v${VERSION}-full.tar.gz"
+ROOT_FOLDER="pmpoint-v${VERSION}"
+STAGING_DIR="/tmp/pmpoint_release_build"
 
 echo "Staging files into $ROOT_FOLDER..."
 
