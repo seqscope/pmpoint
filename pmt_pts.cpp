@@ -222,7 +222,7 @@ bool pmt_pts::read_header_meta_entries()
 
   hdr = pmtiles::deserialize_header(hdr_str);
 
-  if (hdr.tile_type != pmtiles::TILETYPE_MVT)
+  if (hdr.tile_type != pmtiles::TILETYPE_MVT && hdr.tile_type != 0x06)
   {
     //error("Unsupported tile type: %d -- Only MVTiles allowed", hdr.tile_type);
     notice("Unsupported tile type: %d", hdr.tile_type);
@@ -268,7 +268,7 @@ bool pmt_pts::read_header_meta_entries()
     tileid2idx[tile_id] = i;
   }
   hdr_read = true;
-  return hdr.tile_type == pmtiles::TILETYPE_MVT;
+  return (hdr.tile_type == pmtiles::TILETYPE_MVT || hdr.tile_type == 0x06);
 }
 
 bool pmt_pts::read_metadata()

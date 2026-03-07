@@ -166,6 +166,138 @@ void decode_mvt_raw(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y
     }
 }
 
+class MLTPointEncoder {
+    std::string out;
+    void write_varint(std::uint64_t value) {
+        do {
+            uint8_t byte = value & 0x7F;
+            value >>= 7;
+            if (value > 0) byte |= 0x80;
+            out.push_back(byte);
+        } while (value > 0);
+    }
+    uint32_t encode_zigzag32(int32_t v) { return (v << 1) ^ (v >> 31); }
+public:
+    std::string encode(uint32_t extent, const std::string& layer_name, const fast_mvt& df, const std::vector<int>& indices, double offset_x, double offset_y, double scale_factor) {
+        out.clear();
+        std::string tmp_ft;
+        auto append_varint = [&](std::uint64_t value) {
+            do {
+                uint8_t byte = value & 0x7F;
+                value >>= 7;
+                if (value > 0) byte |= 0x80;
+                tmp_ft.push_back(byte);
+            } while (value > 0);
+        };
+        append_varint(layer_name.size());
+        tmp_ft.append(layer_name);
+        append_varint(extent);
+        append_varint(1); // num columns
+        append_varint(4); // typeCode=GEOMETRY
+        append_varint(2); // numStreams
+
+        // geometry type
+        tmp_ft.push_back(0x10);
+        tmp_ft.push_back(0x02);
+        append_varint(indices.size());
+        std::string geom_type_data(indices.size(), 0);
+        append_varint(geom_type_data.size());
+        tmp_ft.append(geom_type_data);
+
+        // vertices
+        tmp_ft.push_back(0x13);
+        tmp_ft.push_back(0x02);
+        append_varint(indices.size() * 2);
+        std::string vertex_data;
+        auto append_v_varint = [&](std::uint64_t value) {
+            do {
+                uint8_t byte = value & 0x7F;
+                value >>= 7;
+                if (value > 0) byte |= 0x80;
+                vertex_data.push_back(byte);
+            } while (value > 0);
+        };
+        for(size_t idx=0; idx<indices.size(); ++idx) {
+            size_t i = indices[idx];
+            int32_t px = std::round((df.features[i].pt.global_x - offset_x) / scale_factor);
+            int32_t py = std::round((offset_y - df.features[i].pt.global_y) / scale_factor);
+            append_v_varint(encode_zigzag32(px));
+            append_v_varint(encode_zigzag32(py));
+        }
+        append_varint(vertex_data.size());
+        tmp_ft.append(vertex_data);
+
+        write_varint(1 + tmp_ft.size());
+        out.push_back(1);
+        out.append(tmp_ft);
+        return out;
+    }
+};
+
+std::string encode_mlt_raw(const fast_mvt& df, const std::vector<int>& indices, uint8_t z, uint32_t x, uint32_t y, const std::string& layer_name) {
+    double scale_factor = pmt_utils::epsg3857_scale_factor(z);
+    double offset_x, offset_y;
+    pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
+    MLTPointEncoder encoder;
+    return encoder.encode(4096, layer_name, df, indices, offset_x, offset_y, scale_factor);
+}
+
+void decode_mlt_raw(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y, fast_mvt& out) {
+    if (buffer.empty()) return;
+    double scale_factor = pmt_utils::epsg3857_scale_factor(z);
+    double offset_x, offset_y;
+    pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
+    const char* ptr = buffer.data();
+    const char* end = buffer.data() + buffer.size();
+    auto read_varint = [&]() -> uint64_t {
+        uint64_t val = 0; int shift = 0;
+        while (ptr < end) {
+            uint8_t b = *ptr++;
+            val |= (uint64_t)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) break;
+            shift += 7;
+        }
+        return val;
+    };
+    while (ptr < end) {
+        uint64_t layer_len = read_varint();
+        if (layer_len == 0 || ptr >= end) break;
+        uint8_t tag = *ptr++;
+        if (tag != 1) { ptr += layer_len - 1; continue; }
+        uint64_t name_len = read_varint();
+        std::string layer_name(ptr, name_len);
+        ptr += name_len;
+        uint64_t extent = read_varint();
+        uint64_t num_columns = read_varint();
+        for (uint64_t col=0; col<num_columns; ++col) {
+            uint64_t typeCode = read_varint();
+            if (typeCode == 4) { // GEOMETRY
+                uint64_t numStreams = read_varint();
+                uint8_t s0_phys = *ptr++; (void)s0_phys;
+                uint8_t s0_tech = *ptr++; (void)s0_tech;
+                uint64_t s0_num_vals = read_varint(); (void)s0_num_vals;
+                uint64_t s0_len = read_varint();
+                ptr += s0_len;
+                uint8_t s1_phys = *ptr++; (void)s1_phys;
+                uint8_t s1_tech = *ptr++; (void)s1_tech;
+                uint64_t s1_num_vals = read_varint(); (void)s1_num_vals;
+                uint64_t s1_len = read_varint();
+                const char* v_end = ptr + s1_len;
+                while (ptr < v_end) {
+                    uint64_t zx = read_varint();
+                    uint64_t zy = read_varint();
+                    int32_t px = protozero::decode_zigzag32(zx);
+                    int32_t py = protozero::decode_zigzag32(zy);
+                    fast_feature f(pmt_utils::pmt_pt_t(z, 0, 0));
+                    f.pt.global_x = offset_x + scale_factor * px;
+                    f.pt.global_y = offset_y - scale_factor * py;
+                    out.features.push_back(std::move(f));
+                }
+            }
+        }
+    }
+}
+
 std::string encode_mvt(const fast_mvt& df, const std::vector<int>& indices, uint8_t z, uint32_t x, uint32_t y, const std::string& layer_name) {
     std::string tile_data;
     protozero::pbf_writer tile_writer(tile_data);
@@ -375,7 +507,7 @@ public:
 
 void builder_worker(PyramidBuilderQueue& queue, 
                     const std::map<uint64_t, pmtiles::entryv3>& next_level_entries,
-                    uint64_t max_features_limit, uint64_t max_bytes_limit, uint32_t point_density_threshold) {
+                    uint64_t max_features_limit, uint64_t max_bytes_limit, uint32_t point_density_threshold, uint8_t tile_type) {
     
     pmtiles::entry_zxy entry(0,0,0,0,0);
     while (queue.get_tile(entry)) {
@@ -402,7 +534,8 @@ void builder_worker(PyramidBuilderQueue& queue,
                     
                     std::string uncompressed = gzip_decompress(compressed);
                     fast_mvt child_mvt;
-                    decode_mvt_raw(uncompressed, cz, cx, cy, child_mvt);
+                    if (tile_type == 0x06) decode_mlt_raw(uncompressed, cz, cx, cy, child_mvt);
+                    else decode_mvt_raw(uncompressed, cz, cx, cy, child_mvt);
                     
                     std::vector<uint32_t> k_remap(child_mvt.keys.size());
                     for(size_t i=0; i<child_mvt.keys.size(); ++i) {
@@ -469,7 +602,10 @@ void builder_worker(PyramidBuilderQueue& queue,
         }
         
         if (current_max_features > 0) {
-            std::string encoded = encode_mvt(combined_df, indices, z, x, y, layer_name_global);
+            std::string encoded;
+            if (tile_type == 0x06) encoded = encode_mlt_raw(combined_df, indices, z, x, y, layer_name_global);
+            else encoded = encode_mvt(combined_df, indices, z, x, y, layer_name_global);
+
             std::string final_compressed = gzip_compress(encoded);
             
             std::lock_guard<std::mutex> lock(out_mutex);
@@ -519,6 +655,15 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     pmt_pts pmt(in_pmtiles.c_str());
     if (!pmt.read_header_meta_entries()) error("Invalid PMTiles file");
 
+    uint8_t tile_type = pmt.hdr.tile_type;
+    if (tile_type == pmtiles::TILETYPE_MVT) {
+        notice("Input format: MVT-based PMTiles");
+    } else if (tile_type == 0x06) {
+        notice("Input format: MLT-based PMTiles");
+    } else {
+        error("Unsupported PMTiles format: tile_type=%d", tile_type);
+    }
+
     uint8_t z_max = pmt.hdr.max_zoom;
     if (min_zoom > z_max) min_zoom = z_max;
     notice("Constructing pyramid from zoom %d down to %d", z_max, min_zoom);
@@ -527,11 +672,37 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     if (pmt.tile_entries.size() > 0) {
         std::string buffer;
         pmt.fetch_tile_to_buffer(pmt.tile_entries[0].z, pmt.tile_entries[0].x, pmt.tile_entries[0].y, buffer);
-        mapbox::vector_tile::buffer* p_tile = new mapbox::vector_tile::buffer(buffer);
-        if (p_tile && p_tile->layerNames().size() > 0) {
-            layer_name_global = p_tile->layerNames()[0];
+        if (tile_type == 0x06) {
+            const char* ptr = buffer.data();
+            const char* end = buffer.data() + buffer.size();
+            auto read_varint = [&]() -> uint64_t {
+                uint64_t val = 0; int shift = 0;
+                while (ptr < end) {
+                    uint8_t b = *ptr++;
+                    val |= (uint64_t)(b & 0x7F) << shift;
+                    if ((b & 0x80) == 0) break;
+                    shift += 7;
+                }
+                return val;
+            };
+            while (ptr < end) {
+                uint64_t layer_len = read_varint();
+                if (layer_len == 0 || ptr >= end) break;
+                uint8_t tag = *ptr++;
+                if (tag == 1) {
+                    uint64_t name_len = read_varint();
+                    layer_name_global = std::string(ptr, name_len);
+                    break;
+                }
+                ptr += layer_len - 1;
+            }
+        } else {
+            mapbox::vector_tile::buffer* p_tile = new mapbox::vector_tile::buffer(buffer);
+            if (p_tile && p_tile->layerNames().size() > 0) {
+                layer_name_global = p_tile->layerNames()[0];
+            }
+            delete p_tile;
         }
-        delete p_tile;
     }
     notice("Using layer name: %s", layer_name_global.c_str());
 
@@ -581,7 +752,7 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
         
         std::vector<std::thread> threads;
         for (int32_t i = 0; i < num_threads; ++i) {
-            threads.emplace_back(builder_worker, std::ref(queue), std::cref(level_entries), max_tile_features, max_tile_bytes, point_density_threshold);
+            threads.emplace_back(builder_worker, std::ref(queue), std::cref(level_entries), max_tile_features, max_tile_bytes, point_density_threshold, tile_type);
         }
         for (auto& t : threads) t.join();
         
@@ -627,7 +798,7 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     header.clustered = false; 
     header.internal_compression = pmtiles::COMPRESSION_GZIP;
     header.tile_compression = pmtiles::COMPRESSION_GZIP;
-    header.tile_type = pmtiles::TILETYPE_MVT;
+    header.tile_type = tile_type;
     header.min_zoom = min_zoom;
     
     notice("Writing to %s...", out_pmtiles.c_str());
