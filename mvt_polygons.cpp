@@ -127,11 +127,17 @@ bool mvt_polygons_filt::decode_polygons_df(const std::string &_buffer, uint8_t z
 
                 // make sure that the polygons only have one ring
                 if ( geom.size() != 1 ) {
-                    error("Only simple polygons (single outer ring) are supported, but found features with %zu rings", geom.size());
+                    //error("Only simple polygons (single outer ring) are supported, but found features with %zu rings", geom.size());
+                    notice("WARNING: Only simple polygons (single outer ring) are supported, but found features with %zu rings. Skipping this feature.", geom.size());
+                    nskip++;
+                    continue;
                 }
 
                 if ( geom[0].empty() ) {
-                    error("Empty polygon found");
+                    //error("Empty polygon found");
+                    notice("WARNING: Empty polygon found. Skipping this feature.");
+                    nskip++;
+                    continue;
                 }
 
                 // obtain the polygons
