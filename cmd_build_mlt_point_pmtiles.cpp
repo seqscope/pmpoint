@@ -9,6 +9,8 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <unordered_map>
+#include <list>
 #include <iostream>
 #include <fcntl.h>
 #include <unistd.h>
@@ -403,230 +405,304 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
     pl.Status();
 
     if (in_csv.empty() || out_pmtiles.empty()) error("Missing --in or --out");
-
-    char delimiter = delim.empty() ? ',' : delim[0];
+    if (delim.size() != 1) error("Delimiter must be a single character");
+    if (n_threads < 1) n_threads = 1;
 
     std::string base_name = in_csv;
-    size_t slash_pos = base_name.find_last_of("/\\");
-    if (slash_pos != std::string::npos) base_name = base_name.substr(slash_pos + 1);
-    size_t dot_pos = base_name.find_last_of(".");
-    if (dot_pos != std::string::npos) base_name = base_name.substr(0, dot_pos);
+    {
+        size_t p = base_name.find_last_of("/\\");
+        if (p != std::string::npos) base_name = base_name.substr(p + 1);
+        size_t d = base_name.find_last_of(".");
+        if (d != std::string::npos) base_name = base_name.substr(0, d);
+    }
 
-    // std::ifstream file(in_csv);
-    // if (!file.is_open()) error("Could not open input CSV %s", in_csv.c_str());
     tsv_reader tr(in_csv.c_str());
-    if ( delim.size() != 1 )
-        error("Delimiter must be a single character");
     tr.delimiter = (int)delim[0];
 
-    // std::string line;
-    // if (!std::getline(file, line)) error("Empty file");
-
     std::vector<std::string> headers;
-    // std::stringstream ss(line);
-    // std::string token;
-    // while(std::getline(ss, token, delimiter)) {
-    //     headers.push_back(token);
-    // }
-    if ( tr.read_line() ) {
-        for (int i = 0; i < tr.nfields; ++i) {
+    if (tr.read_line()) {
+        for (int i = 0; i < tr.nfields; ++i)
             headers.push_back(tr.str_field_at(i));
-        }
     } else {
         error("Empty file or failed to read header");
     }
 
-    int col_x = -1;
-    int col_y = -1;
-    for(size_t i=0; i<headers.size(); ++i) {
-        if (headers[i] == colname_x) col_x = i;
-        if (headers[i] == colname_y) col_y = i;
+    int col_x = -1, col_y = -1;
+    for (size_t i = 0; i < headers.size(); ++i) {
+        if (headers[i] == colname_x) col_x = (int)i;
+        if (headers[i] == colname_y) col_y = (int)i;
     }
-
     if (col_x == -1 || col_y == -1) error("Could not find X or Y columns in header.");
 
-    // Identify attribute columns (all columns except X and Y)
-    std::vector<int> attr_col_indices;
+    std::vector<int>         attr_col_indices;
     std::vector<std::string> attr_col_names;
     for (size_t i = 0; i < headers.size(); ++i) {
         if ((int)i != col_x && (int)i != col_y) {
-            attr_col_indices.push_back(i);
+            attr_col_indices.push_back((int)i);
             attr_col_names.push_back(headers[i]);
         }
     }
+    size_t n_attrs = attr_col_names.size();
 
-    std::map<uint64_t, std::vector<PointFeature>> tile_points;
-    uint64_t point_count = 0;
+    // =========================================================
+    // Phase 1: Read CSV → per-tile binary temp files
+    //   Memory: O(max_open_tile_buffers) instead of O(all_points)
+    // =========================================================
+    notice("Phase 1: Reading %s and writing per-tile temp files...", in_csv.c_str());
+
+    // Column type/nullability detection (updated inline, O(n_cols) memory)
+    std::vector<int>  attr_col_types(n_attrs, COL_TYPE_INT);
+    std::vector<bool> attr_col_nullable(n_attrs, false);
+
+    // Per-tile state
+    struct TileInfo {
+        std::string path;
+        FILE*       fp           = nullptr;
+        uint64_t    point_count  = 0;
+    };
+    std::unordered_map<uint64_t, TileInfo> tile_infos;
+
+    // LRU file-handle cache to avoid hitting OS open-file limits
+    const size_t MAX_OPEN_FDS = 512;
+    std::list<uint64_t> lru_list;   // front = most recently used
+    std::unordered_map<uint64_t, std::list<uint64_t>::iterator> lru_pos;
+    size_t open_fd_count = 0;
+    std::string pid_str = std::to_string(getpid());
+
+    // Returns an open (append-mode) FILE* for the given tile, managing the LRU.
+    auto get_tile_fp = [&](uint64_t tile_id) -> FILE* {
+        TileInfo& ti = tile_infos[tile_id];
+        if (ti.path.empty())
+            ti.path = tmp_dir + "/pmpoint_mlt_" + pid_str + "_" + std::to_string(tile_id) + ".bin";
+
+        auto pos_it = lru_pos.find(tile_id);
+        if (pos_it != lru_pos.end()) {
+            // Already open: move to front of LRU
+            lru_list.erase(pos_it->second);
+            lru_list.push_front(tile_id);
+            lru_pos[tile_id] = lru_list.begin();
+        } else {
+            // Not open: evict LRU tail if at limit, then open
+            if (open_fd_count >= MAX_OPEN_FDS) {
+                uint64_t evict_id = lru_list.back();
+                lru_list.pop_back();
+                lru_pos.erase(evict_id);
+                fclose(tile_infos[evict_id].fp);
+                tile_infos[evict_id].fp = nullptr;
+                --open_fd_count;
+            }
+            lru_list.push_front(tile_id);
+            lru_pos[tile_id] = lru_list.begin();
+            ti.fp = fopen(ti.path.c_str(), "ab");
+            if (!ti.fp) error("Cannot create tile temp file: %s", ti.path.c_str());
+            ++open_fd_count;
+        }
+        return ti.fp;
+    };
 
     double min_x = std::numeric_limits<double>::max();
     double min_y = std::numeric_limits<double>::max();
     double max_x = std::numeric_limits<double>::lowest();
     double max_y = std::numeric_limits<double>::lowest();
-
-    notice("Reading CSV...");
+    uint64_t point_count = 0;
+    uint64_t nlines      = 0;
     const uint32_t extent = 4096;
-    uint64_t nlines = 0;
-    while(tr.read_line()) {
-        std::vector<std::string> tokens;
-        for (int i = 0; i < tr.nfields; ++i) {
-            tokens.push_back(tr.str_field_at(i));
-        }
-        if (tokens.size() <= (size_t)std::max(col_x, col_y)) continue;
 
+    while (tr.read_line()) {
+        if (tr.nfields <= std::max(col_x, col_y)) continue;
+
+        double cx, cy;
         try {
-            double x = std::stod(tokens[col_x]);
-            double y = std::stod(tokens[col_y]);
-
-            int64_t tx, ty;
-            double lx, ly;
-            pmt_utils::epsg3857totilecoord(x, y, zoom, &tx, &ty, &lx, &ly);
-
-            // lx, ly are in pixel coordinates [0, 256], convert to tile extent [0, extent]
-            int32_t px = std::round(lx * extent / 256.0);
-            int32_t py = std::round(ly * extent / 256.0);
-
-            uint64_t tile_id = pmtiles::zxy_to_tileid(zoom, tx, ty);
-
-            PointFeature pf;
-            pf.x = px;
-            pf.y = py;
-            pf.attrs.resize(attr_col_indices.size());
-            for (size_t ai = 0; ai < attr_col_indices.size(); ++ai) {
-                int ci = attr_col_indices[ai];
-                if (ci < (int)tokens.size()) {
-                    pf.attrs[ai] = tokens[ci];
-                }
-            }
-            tile_points[tile_id].push_back(std::move(pf));
-            point_count++;
-
-            min_x = std::min(min_x, x);
-            min_y = std::min(min_y, y);
-            max_x = std::max(max_x, x);
-            max_y = std::max(max_y, y);
-            ++nlines;
-            if ( nlines % 1000000 == 0 ) {
-                notice("Read %llu lines, %llu valid points so far...", nlines, point_count);
-            }
-
-        } catch(...) {
-            notice("Warning: Skipping line with invalid coordinates: %s", tr.str.s);
+            cx = std::stod(tr.str_field_at(col_x));
+            cy = std::stod(tr.str_field_at(col_y));
+        } catch (...) {
             continue;
         }
-    }
-    tr.close();
 
-    notice("Read %llu valid points into %zu tiles.", point_count, tile_points.size());
+        int64_t tx, ty;
+        double lx, ly;
+        pmt_utils::epsg3857totilecoord(cx, cy, zoom, &tx, &ty, &lx, &ly);
+        int32_t px = (int32_t)std::round(lx * extent / 256.0);
+        int32_t py = (int32_t)std::round(ly * extent / 256.0);
+        uint64_t tile_id = pmtiles::zxy_to_tileid(zoom, (uint32_t)tx, (uint32_t)ty);
 
-    // Detect column types and nullability.
-    // Type detection: start as INT, downgrade to FLOAT if non-integer, then STRING if non-numeric.
-    // Nullability: a column is nullable if any value is missing (empty or "NA").
-    // Missing values do not influence type detection.
-    std::vector<int>  attr_col_types   (attr_col_names.size(), COL_TYPE_INT);
-    std::vector<bool> attr_col_nullable(attr_col_names.size(), false);
+        // Collect attr values + update type detection inline
+        for (size_t ai = 0; ai < n_attrs; ++ai) {
+            int ci = attr_col_indices[ai];
+            const char* raw = (ci < tr.nfields) ? tr.str_field_at(ci) : "";
+            std::string v(raw);
 
-    for (auto& kv : tile_points) {
-        for (auto& feature : kv.second) {
-            for (size_t c = 0; c < feature.attrs.size(); ++c) {
-                const std::string& v = feature.attrs[c];
-                if (is_missing(v)) {
-                    attr_col_nullable[c] = true;
-                    continue;
-                }
-                if (attr_col_types[c] == COL_TYPE_STRING) continue;
-                if (attr_col_types[c] == COL_TYPE_INT) {
+            if (is_missing(v)) {
+                attr_col_nullable[ai] = true;
+            } else if (attr_col_types[ai] != COL_TYPE_STRING) {
+                if (attr_col_types[ai] == COL_TYPE_INT) {
                     try {
                         size_t pos;
                         std::stoll(v, &pos);
-                        if (pos != v.size()) throw std::invalid_argument("trailing chars");
+                        if (pos != v.size()) throw std::invalid_argument("trailing");
                     } catch (...) {
-                        try {
-                            std::stod(v);
-                            attr_col_types[c] = COL_TYPE_FLOAT;
-                        } catch (...) {
-                            attr_col_types[c] = COL_TYPE_STRING;
-                        }
+                        try { std::stod(v); attr_col_types[ai] = COL_TYPE_FLOAT; }
+                        catch (...) { attr_col_types[ai] = COL_TYPE_STRING; }
                     }
-                } else { // COL_TYPE_FLOAT
-                    try {
-                        std::stod(v);
-                    } catch (...) {
-                        attr_col_types[c] = COL_TYPE_STRING;
-                    }
+                } else {
+                    try { std::stod(v); }
+                    catch (...) { attr_col_types[ai] = COL_TYPE_STRING; }
                 }
+            }
+        }
+
+        // Write binary point record to tile temp file:
+        //   int32_t px | int32_t py | for each attr: uint32_t len | char[len]
+        FILE* fp = get_tile_fp(tile_id);
+        fwrite(&px, sizeof(px), 1, fp);
+        fwrite(&py, sizeof(py), 1, fp);
+        for (size_t ai = 0; ai < n_attrs; ++ai) {
+            int ci = attr_col_indices[ai];
+            const char* raw = (ci < tr.nfields) ? tr.str_field_at(ci) : "";
+            uint32_t len = (uint32_t)strlen(raw);
+            fwrite(&len, sizeof(len), 1, fp);
+            if (len > 0) fwrite(raw, 1, len, fp);
+        }
+        tile_infos[tile_id].point_count++;
+
+        min_x = std::min(min_x, cx);
+        min_y = std::min(min_y, cy);
+        max_x = std::max(max_x, cx);
+        max_y = std::max(max_y, cy);
+        ++point_count;
+        ++nlines;
+        if (nlines % 1000000 == 0)
+            notice("Read %llu lines, %llu valid points, %zu tiles so far...",
+                   nlines, point_count, tile_infos.size());
+    }
+    tr.close();
+
+    // Close all open tile files
+    for (auto& kv : tile_infos) {
+        if (kv.second.fp) { fclose(kv.second.fp); kv.second.fp = nullptr; }
+    }
+
+    notice("Read %llu valid points into %zu tiles.", point_count, tile_infos.size());
+
+    for (size_t c = 0; c < n_attrs; ++c) {
+        const char* ts = attr_col_types[c] == COL_TYPE_INT   ? "int"
+                       : attr_col_types[c] == COL_TYPE_FLOAT ? "float" : "string";
+        notice("Column '%s': %s%s", attr_col_names[c].c_str(), ts,
+               attr_col_nullable[c] ? " (nullable)" : "");
+    }
+
+    // Find center tile (tile with the most points)
+    uint64_t center_tile_id = 0;
+    {
+        uint64_t max_pts = 0;
+        for (auto& kv : tile_infos) {
+            if (kv.second.point_count > max_pts) {
+                max_pts = kv.second.point_count;
+                center_tile_id = kv.first;
             }
         }
     }
 
-    for (size_t c = 0; c < attr_col_names.size(); ++c) {
-        const char* type_str = attr_col_types[c] == COL_TYPE_INT   ? "int"
-                             : attr_col_types[c] == COL_TYPE_FLOAT ? "float"
-                                                                    : "string";
-        notice("Column '%s': %s%s", attr_col_names[c].c_str(), type_str,
-               attr_col_nullable[c] ? " (nullable)" : "");
-    }
+    // Build sorted tile list for PMTiles directory ordering
+    std::vector<uint64_t> sorted_tile_ids;
+    sorted_tile_ids.reserve(tile_infos.size());
+    for (auto& kv : tile_infos) sorted_tile_ids.push_back(kv.first);
+    std::sort(sorted_tile_ids.begin(), sorted_tile_ids.end());
 
-    uint64_t max_points = 0;
-    uint64_t center_tile_id = 0;
-    for (const auto& kv : tile_points) {
-        if (kv.second.size() > max_points) {
-            max_points = kv.second.size();
-            center_tile_id = kv.first;
-        }
-    }
+    // =========================================================
+    // Phase 2: Encode tiles from temp files → compressed output
+    //   Memory: O(n_threads × largest_tile) at a time
+    // =========================================================
+    notice("Phase 2: Encoding %zu tiles with %d thread(s)...",
+           sorted_tile_ids.size(), n_threads);
 
-    if (n_threads < 1) n_threads = 1;
-
-    // Flatten tile_points map into a vector for indexed parallel access
-    std::vector<std::pair<uint64_t, std::vector<PointFeature>>> tile_vec(
-        tile_points.begin(), tile_points.end());
-    tile_points.clear(); // free memory
-
-    // Generate PMTiles archive
-    std::string tmp_file = tmp_dir + "/pmpoint_mlt_" + std::to_string(getpid()) + ".tmp";
-    int out_fd = open(tmp_file.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0666);
-    if (out_fd < 0) error("Failed to open temporary file: %s", tmp_file.c_str());
-
-    // Per-tile compressed output
-    std::vector<std::string> compressed_tiles(tile_vec.size());
-
-    notice("Encoding MLT tiles with %d thread(s)...", n_threads);
-
-    if (n_threads <= 1) {
-        MLTPointEncoder encoder;
-        for (size_t i = 0; i < tile_vec.size(); ++i) {
-            std::string uncompressed_mlt = encoder.encode(
-                extent, base_name, tile_vec[i].second,
-                attr_col_names, attr_col_types, attr_col_nullable);
-            compressed_tiles[i] = mlt_gzip_compress(uncompressed_mlt);
-        }
-    } else {
-        std::atomic<size_t> next_tile(0);
-        std::vector<std::thread> threads;
-        for (int t = 0; t < n_threads; ++t) {
-            threads.emplace_back([&]() {
-                MLTPointEncoder encoder;
-                while (true) {
-                    size_t i = next_tile.fetch_add(1);
-                    if (i >= tile_vec.size()) break;
-                    std::string uncompressed_mlt = encoder.encode(
-                        extent, base_name, tile_vec[i].second,
-                        attr_col_names, attr_col_types, attr_col_nullable);
-                    compressed_tiles[i] = mlt_gzip_compress(uncompressed_mlt);
+    // Helper: read one tile's points from its temp file (deletes the file after)
+    auto read_tile_points = [&](uint64_t tile_id) -> std::vector<PointFeature> {
+        TileInfo& ti = tile_infos[tile_id];
+        FILE* f = fopen(ti.path.c_str(), "rb");
+        if (!f) error("Cannot open tile temp file for reading: %s", ti.path.c_str());
+        std::vector<PointFeature> features;
+        features.reserve(ti.point_count);
+        int32_t px, py;
+        while (fread(&px, sizeof(px), 1, f) == 1) {
+            if (fread(&py, sizeof(py), 1, f) != 1) break;
+            PointFeature pf;
+            pf.x = px; pf.y = py;
+            pf.attrs.resize(n_attrs);
+            for (size_t ai = 0; ai < n_attrs; ++ai) {
+                uint32_t len = 0;
+                if (fread(&len, sizeof(len), 1, f) != 1) break;
+                if (len > 0) {
+                    pf.attrs[ai].resize(len);
+                    if (fread(&pf.attrs[ai][0], 1, len, f) != len) break;
                 }
-            });
+            }
+            features.push_back(std::move(pf));
         }
-        for (auto& th : threads) th.join();
-    }
+        fclose(f);
+        unlink(ti.path.c_str());
+        return features;
+    };
 
-    // Write compressed tiles sequentially and build directory entries
+    std::string tmp_file = tmp_dir + "/pmpoint_mlt_" + pid_str + ".tmp";
+    int out_fd = open(tmp_file.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0666);
+    if (out_fd < 0) error("Failed to open temporary output file: %s", tmp_file.c_str());
+
     std::vector<pmtiles::entryv3> final_entries;
+    final_entries.reserve(sorted_tile_ids.size());
     uint64_t current_out_offset = 0;
-    for (size_t i = 0; i < tile_vec.size(); ++i) {
-        pwrite(out_fd, compressed_tiles[i].data(), compressed_tiles[i].size(), current_out_offset);
-        final_entries.emplace_back(tile_vec[i].first, current_out_offset, compressed_tiles[i].size(), 1);
-        current_out_offset += compressed_tiles[i].size();
-        compressed_tiles[i].clear();
+
+    // Process in batches of n_threads tiles: load → encode in parallel → write
+    size_t n_tiles     = sorted_tile_ids.size();
+    size_t batch_size  = (size_t)n_threads;
+    size_t tiles_done  = 0;
+
+    for (size_t batch_start = 0; batch_start < n_tiles; batch_start += batch_size) {
+        size_t batch_end = std::min(batch_start + batch_size, n_tiles);
+        size_t bs        = batch_end - batch_start;
+
+        // Load this batch's tile data from temp files
+        std::vector<std::vector<PointFeature>> batch_data(bs);
+        for (size_t i = 0; i < bs; ++i)
+            batch_data[i] = read_tile_points(sorted_tile_ids[batch_start + i]);
+
+        // Encode + compress in parallel
+        std::vector<std::string> batch_compressed(bs);
+        if (n_threads > 1) {
+            std::vector<std::thread> threads;
+            for (size_t i = 0; i < bs; ++i) {
+                threads.emplace_back([&, i]() {
+                    MLTPointEncoder enc;
+                    batch_compressed[i] = mlt_gzip_compress(
+                        enc.encode(extent, base_name, batch_data[i],
+                                   attr_col_names, attr_col_types, attr_col_nullable));
+                    std::vector<PointFeature>().swap(batch_data[i]);
+                });
+            }
+            for (auto& t : threads) t.join();
+        } else {
+            MLTPointEncoder enc;
+            for (size_t i = 0; i < bs; ++i) {
+                batch_compressed[i] = mlt_gzip_compress(
+                    enc.encode(extent, base_name, batch_data[i],
+                               attr_col_names, attr_col_types, attr_col_nullable));
+                std::vector<PointFeature>().swap(batch_data[i]);
+            }
+        }
+
+        // Write batch to the output temp file
+        for (size_t i = 0; i < bs; ++i) {
+            uint64_t tid = sorted_tile_ids[batch_start + i];
+            pwrite(out_fd, batch_compressed[i].data(), batch_compressed[i].size(),
+                   current_out_offset);
+            final_entries.emplace_back(tid, current_out_offset,
+                                       (uint32_t)batch_compressed[i].size(), 1);
+            current_out_offset += batch_compressed[i].size();
+        }
+
+        tiles_done += bs;
+        if (tiles_done % 10000 == 0 || tiles_done == n_tiles)
+            notice("Encoded %zu / %zu tiles...", tiles_done, n_tiles);
     }
 
     notice("Sorting directory...");
