@@ -166,89 +166,84 @@ void decode_mvt_raw(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y
     }
 }
 
-class MLTPointEncoder {
-    std::string out;
-    void write_varint(std::uint64_t value) {
-        do {
-            uint8_t byte = value & 0x7F;
-            value >>= 7;
-            if (value > 0) byte |= 0x80;
-            out.push_back(byte);
-        } while (value > 0);
-    }
-    uint32_t encode_zigzag32(int32_t v) { return (v << 1) ^ (v >> 31); }
-public:
-    std::string encode(uint32_t extent, const std::string& layer_name, const fast_mvt& df, const std::vector<int>& indices, double offset_x, double offset_y, double scale_factor) {
-        out.clear();
-        std::string tmp_ft;
-        auto append_varint = [&](std::uint64_t value) {
-            do {
-                uint8_t byte = value & 0x7F;
-                value >>= 7;
-                if (value > 0) byte |= 0x80;
-                tmp_ft.push_back(byte);
-            } while (value > 0);
-        };
-        append_varint(layer_name.size());
-        tmp_ft.append(layer_name);
-        append_varint(extent);
-        append_varint(1); // num columns
-        append_varint(4); // typeCode=GEOMETRY
-        append_varint(2); // numStreams
+// ============================================================
+// MLT-specific types and helpers for pyramid building
+// ============================================================
 
-        // geometry type
-        tmp_ft.push_back(0x10);
-        tmp_ft.push_back(0x02);
-        append_varint(indices.size());
-        std::string geom_type_data(indices.size(), 0);
-        append_varint(geom_type_data.size());
-        tmp_ft.append(geom_type_data);
+static const int MLT_TYPE_STRING = 0;
+static const int MLT_TYPE_FLOAT  = 1;
+static const int MLT_TYPE_INT    = 2;
 
-        // vertices
-        tmp_ft.push_back(0x13);
-        tmp_ft.push_back(0x02);
-        append_varint(indices.size() * 2);
-        std::string vertex_data;
-        auto append_v_varint = [&](std::uint64_t value) {
-            do {
-                uint8_t byte = value & 0x7F;
-                value >>= 7;
-                if (value > 0) byte |= 0x80;
-                vertex_data.push_back(byte);
-            } while (value > 0);
-        };
-        for(size_t idx=0; idx<indices.size(); ++idx) {
-            size_t i = indices[idx];
-            int32_t px = std::round((df.features[i].pt.global_x - offset_x) / scale_factor);
-            int32_t py = std::round((offset_y - df.features[i].pt.global_y) / scale_factor);
-            append_v_varint(encode_zigzag32(px));
-            append_v_varint(encode_zigzag32(py));
-        }
-        append_varint(vertex_data.size());
-        tmp_ft.append(vertex_data);
-
-        write_varint(1 + tmp_ft.size());
-        out.push_back(1);
-        out.append(tmp_ft);
-        return out;
-    }
+struct mlt_feature_pyr {
+    double global_x, global_y;
+    std::vector<std::string> attrs;
 };
 
-std::string encode_mlt_raw(const fast_mvt& df, const std::vector<int>& indices, uint8_t z, uint32_t x, uint32_t y, const std::string& layer_name) {
-    double scale_factor = pmt_utils::epsg3857_scale_factor(z);
-    double offset_x, offset_y;
-    pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
-    MLTPointEncoder encoder;
-    return encoder.encode(4096, layer_name, df, indices, offset_x, offset_y, scale_factor);
+struct mlt_layer_pyr {
+    std::string name;
+    uint32_t extent;
+    std::vector<std::string> col_names;
+    std::vector<int>  col_types;
+    std::vector<bool> col_nullable;
+    std::vector<mlt_feature_pyr> features;
+};
+
+// ORC-style boolean RLE decoder (PRESENT stream)
+static std::vector<bool> decode_bool_rle_pyr(const uint8_t* data, size_t len, size_t count) {
+    std::vector<bool> result;
+    result.reserve(count);
+    size_t i = 0;
+    while (i < len && result.size() < count) {
+        uint8_t header = data[i++];
+        if (header >= 128) {
+            size_t run_len = 256 - header;
+            for (size_t j = 0; j < run_len && i < len && result.size() < count; ++j, ++i) {
+                uint8_t byte = data[i];
+                for (int b = 0; b < 8 && result.size() < count; ++b)
+                    result.push_back((byte >> b) & 1);
+            }
+        } else {
+            size_t run_len = header + 3;
+            if (i < len) {
+                uint8_t byte = data[i++];
+                for (size_t j = 0; j < run_len && result.size() < count; ++j)
+                    for (int b = 0; b < 8 && result.size() < count; ++b)
+                        result.push_back((byte >> b) & 1);
+            }
+        }
+    }
+    while (result.size() < count) result.push_back(true);
+    return result;
 }
 
-void decode_mlt_raw(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y, fast_mvt& out) {
+// ORC-style boolean RLE encoder (PRESENT stream)
+static std::string encode_bool_rle_pyr(const std::vector<bool>& present) {
+    size_t n = present.size();
+    size_t numBytes = (n + 7) / 8;
+    std::vector<uint8_t> packed(numBytes, 0);
+    for (size_t i = 0; i < n; ++i)
+        if (present[i]) packed[i/8] |= static_cast<uint8_t>(1 << (i%8));
+    std::string result;
+    size_t offset = 0;
+    while (offset < numBytes) {
+        size_t chunk = std::min(static_cast<size_t>(128), numBytes - offset);
+        result.push_back(static_cast<char>(static_cast<uint8_t>(256 - chunk)));
+        for (size_t i = 0; i < chunk; ++i)
+            result.push_back(static_cast<char>(packed[offset + i]));
+        offset += chunk;
+    }
+    return result;
+}
+
+// Decode an MLT tile (new multi-column format) into mlt_layer_pyr
+void decode_mlt_layer(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y, mlt_layer_pyr& layer) {
     if (buffer.empty()) return;
     double scale_factor = pmt_utils::epsg3857_scale_factor(z);
     double offset_x, offset_y;
     pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
-    const char* ptr = buffer.data();
-    const char* end = buffer.data() + buffer.size();
+
+    const uint8_t* ptr = (const uint8_t*)buffer.data();
+    const uint8_t* end = ptr + buffer.size();
     auto read_varint = [&]() -> uint64_t {
         uint64_t val = 0; int shift = 0;
         while (ptr < end) {
@@ -259,43 +254,296 @@ void decode_mlt_raw(const std::string& buffer, uint8_t z, uint32_t x, uint32_t y
         }
         return val;
     };
+
     while (ptr < end) {
         uint64_t layer_len = read_varint();
         if (layer_len == 0 || ptr >= end) break;
         uint8_t tag = *ptr++;
         if (tag != 1) { ptr += layer_len - 1; continue; }
+
+        // --- Layer header ---
         uint64_t name_len = read_varint();
-        std::string layer_name(ptr, name_len);
+        layer.name = std::string((char*)ptr, name_len);
         ptr += name_len;
-        uint64_t extent = read_varint();
+        layer.extent = (uint32_t)read_varint();
         uint64_t num_columns = read_varint();
-        for (uint64_t col=0; col<num_columns; ++col) {
-            uint64_t typeCode = read_varint();
-            if (typeCode == 4) { // GEOMETRY
-                uint64_t numStreams = read_varint();
-                uint8_t s0_phys = *ptr++; (void)s0_phys;
-                uint8_t s0_tech = *ptr++; (void)s0_tech;
-                uint64_t s0_num_vals = read_varint(); (void)s0_num_vals;
-                uint64_t s0_len = read_varint();
-                ptr += s0_len;
-                uint8_t s1_phys = *ptr++; (void)s1_phys;
-                uint8_t s1_tech = *ptr++; (void)s1_tech;
-                uint64_t s1_num_vals = read_varint(); (void)s1_num_vals;
-                uint64_t s1_len = read_varint();
-                const char* v_end = ptr + s1_len;
-                while (ptr < v_end) {
-                    uint64_t zx = read_varint();
-                    uint64_t zy = read_varint();
-                    int32_t px = protozero::decode_zigzag32(zx);
-                    int32_t py = protozero::decode_zigzag32(zy);
-                    fast_feature f(pmt_utils::pmt_pt_t(z, 0, 0));
-                    f.pt.global_x = offset_x + scale_factor * px;
-                    f.pt.global_y = offset_y - scale_factor * py;
-                    out.features.push_back(std::move(f));
+
+        // --- METADATA SECTION: read all column typeCodes + names ---
+        struct ColMeta { uint64_t typeCode; std::string name; };
+        std::vector<ColMeta> col_metas(num_columns);
+        for (uint64_t c = 0; c < num_columns; ++c) {
+            col_metas[c].typeCode = read_varint();
+            if (col_metas[c].typeCode >= 10) {
+                uint64_t cname_len = read_varint();
+                col_metas[c].name = std::string((char*)ptr, cname_len);
+                ptr += cname_len;
+            }
+        }
+
+        // Set up schema for attribute columns (column 0 is always GEOMETRY)
+        size_t num_attr = num_columns > 0 ? num_columns - 1 : 0;
+        layer.col_names.resize(num_attr);
+        layer.col_types.resize(num_attr);
+        layer.col_nullable.resize(num_attr);
+        for (size_t c = 0; c < num_attr; ++c) {
+            uint64_t tc = col_metas[c + 1].typeCode;
+            layer.col_names[c] = col_metas[c + 1].name;
+            layer.col_nullable[c] = (tc % 2 == 1);
+            uint64_t base = tc - (tc % 2);
+            if      (base >= 20 && base <= 23) layer.col_types[c] = MLT_TYPE_INT;
+            else if (base >= 24 && base <= 27) layer.col_types[c] = MLT_TYPE_FLOAT;
+            else                               layer.col_types[c] = MLT_TYPE_STRING;
+        }
+
+        // --- DATA SECTION ---
+        // GEOMETRY column: has numStreams prefix
+        uint64_t geom_num_streams = read_varint();
+        size_t num_features = 0;
+        std::vector<int32_t> vx, vy;
+
+        for (uint64_t s = 0; s < geom_num_streams; ++s) {
+            if (ptr + 2 > end) break;
+            uint8_t h0 = *ptr++;
+            uint8_t h1 = *ptr++; (void)h1;
+            uint64_t num_vals = read_varint();
+            uint64_t byte_len = read_varint();
+            const uint8_t* sd = ptr;
+            ptr += byte_len;
+            uint8_t phys = (h0 >> 4) & 0x0F;
+            uint8_t dict = h0 & 0x0F;
+            if (phys == 1 && dict == 3) { // VERTEX stream
+                num_features = (size_t)(num_vals / 2);
+                vx.resize(num_features);
+                vy.resize(num_features);
+                const uint8_t* vp = sd;
+                for (size_t i = 0; i < num_features; ++i) {
+                    uint64_t zx = 0; int sh = 0;
+                    while (vp < sd+byte_len) { uint8_t b=*vp++; zx|=(uint64_t)(b&0x7F)<<sh; sh+=7; if(!(b&0x80)) break; }
+                    uint64_t zy = 0; sh = 0;
+                    while (vp < sd+byte_len) { uint8_t b=*vp++; zy|=(uint64_t)(b&0x7F)<<sh; sh+=7; if(!(b&0x80)) break; }
+                    vx[i] = (int32_t)((zx>>1) ^ -(int64_t)(zx&1));
+                    vy[i] = (int32_t)((zy>>1) ^ -(int64_t)(zy&1));
                 }
             }
         }
+
+        layer.features.resize(num_features);
+        for (size_t i = 0; i < num_features; ++i) {
+            layer.features[i].global_x = offset_x + scale_factor * vx[i];
+            layer.features[i].global_y = offset_y - scale_factor * vy[i];
+            layer.features[i].attrs.assign(num_attr, std::string());
+        }
+
+        // Attribute columns
+        for (size_t c = 0; c < num_attr; ++c) {
+            bool nullable = layer.col_nullable[c];
+            int ctype = layer.col_types[c];
+            bool is_str = (ctype == MLT_TYPE_STRING);
+            std::vector<bool> present(num_features, true);
+            std::vector<uint64_t> str_lens;
+            const uint8_t* str_data = nullptr;
+            uint64_t str_data_len = 0;
+
+            uint64_t ns = is_str ? read_varint() : (nullable ? 2 : 1);
+            for (uint64_t s = 0; s < ns; ++s) {
+                if (ptr + 2 > end) break;
+                uint8_t h0 = *ptr++;
+                uint8_t h1 = *ptr++; (void)h1;
+                uint64_t nv = read_varint();
+                uint64_t bl = read_varint();
+                const uint8_t* sd = ptr;
+                ptr += bl;
+                uint8_t phys = (h0 >> 4) & 0x0F;
+
+                if (phys == 0) { // PRESENT
+                    present = decode_bool_rle_pyr(sd, bl, num_features);
+                } else if (phys == 1) { // DATA
+                    if (ctype == MLT_TYPE_INT) {
+                        const uint8_t* dp = sd;
+                        size_t fi = 0;
+                        for (uint64_t vi = 0; vi < nv; ++vi) {
+                            uint64_t zig = 0; int sh = 0;
+                            while (dp < sd+bl) { uint8_t b=*dp++; zig|=(uint64_t)(b&0x7F)<<sh; sh+=7; if(!(b&0x80)) break; }
+                            int64_t val = (int64_t)((zig>>1) ^ -(int64_t)(zig&1));
+                            while (fi < num_features && !present[fi]) ++fi;
+                            if (fi < num_features) layer.features[fi++].attrs[c] = std::to_string(val);
+                        }
+                    } else if (ctype == MLT_TYPE_FLOAT) {
+                        const uint8_t* dp = sd;
+                        size_t fi = 0;
+                        for (uint64_t vi = 0; vi < nv; ++vi) {
+                            uint32_t bits = (uint32_t)dp[0]|((uint32_t)dp[1]<<8)|((uint32_t)dp[2]<<16)|((uint32_t)dp[3]<<24);
+                            dp += 4;
+                            float fval; memcpy(&fval, &bits, 4);
+                            while (fi < num_features && !present[fi]) ++fi;
+                            if (fi < num_features) {
+                                char buf[32]; snprintf(buf, sizeof(buf), "%.9g", (double)fval);
+                                layer.features[fi++].attrs[c] = buf;
+                            }
+                        }
+                    } else { // STRING DATA
+                        str_data = sd; str_data_len = bl; (void)nv;
+                    }
+                } else if (phys == 3) { // LENGTH (string lengths)
+                    const uint8_t* dp = sd;
+                    str_lens.reserve(nv);
+                    for (uint64_t vi = 0; vi < nv; ++vi) {
+                        uint64_t len = 0; int sh = 0;
+                        while (dp < sd+bl) { uint8_t b=*dp++; len|=(uint64_t)(b&0x7F)<<sh; sh+=7; if(!(b&0x80)) break; }
+                        str_lens.push_back(len);
+                    }
+                }
+            }
+
+            // Decode strings after all streams consumed
+            if (is_str && str_data && !str_lens.empty()) {
+                const uint8_t* dp = str_data;
+                size_t fi = 0;
+                for (size_t li = 0; li < str_lens.size(); ++li) {
+                    while (fi < num_features && !present[fi]) ++fi;
+                    if (fi < num_features) {
+                        layer.features[fi++].attrs[c] = std::string((char*)dp, str_lens[li]);
+                        dp += str_lens[li];
+                    }
+                }
+            }
+            (void)str_data_len;
+        }
+
+        break; // only first layer
     }
+}
+
+// Encode an mlt_layer_pyr into MLT tile bytes
+std::string encode_mlt_layer(const mlt_layer_pyr& layer, const std::vector<int>& indices,
+                              uint8_t z, uint32_t x, uint32_t y) {
+    double scale_factor = pmt_utils::epsg3857_scale_factor(z);
+    double offset_x, offset_y;
+    pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
+
+    size_t n = indices.size();
+    size_t num_attr = layer.col_names.size();
+    const std::string& lname = layer.name;
+    uint32_t extent = layer.extent > 0 ? layer.extent : 4096;
+
+    std::string tmp;
+    auto av = [&](uint64_t v) {
+        do { uint8_t b=v&0x7F; v>>=7; if(v) b|=0x80; tmp.push_back(b); } while(v);
+    };
+
+    // METADATA
+    av(lname.size()); tmp.append(lname);
+    av(extent);
+    av(1 + num_attr);
+    av(4); // GEOMETRY, no name
+    for (size_t c = 0; c < num_attr; ++c) {
+        int tc;
+        if      (layer.col_types[c] == MLT_TYPE_INT)   tc = layer.col_nullable[c] ? 21 : 20;
+        else if (layer.col_types[c] == MLT_TYPE_FLOAT)  tc = layer.col_nullable[c] ? 25 : 24;
+        else                                             tc = layer.col_nullable[c] ? 29 : 28;
+        av(tc);
+        av(layer.col_names[c].size()); tmp.append(layer.col_names[c]);
+    }
+
+    // DATA: GEOMETRY
+    av(2); // numStreams
+    // GeomType stream: 0x10=DATA/NONE, 0x02=VARINT, numValues=n, byteLen=n (each 0=varint POINT)
+    tmp.push_back(0x10); tmp.push_back(0x02);
+    av(n); av(n);
+    for (size_t i = 0; i < n; ++i) tmp.push_back(0);
+    // Vertex stream
+    std::string vdata;
+    auto vv = [&](uint64_t v) {
+        do { uint8_t b=v&0x7F; v>>=7; if(v) b|=0x80; vdata.push_back(b); } while(v);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        int fi = indices[i];
+        int32_t px = (int32_t)std::round((layer.features[fi].global_x - offset_x) / scale_factor);
+        int32_t py = (int32_t)std::round((offset_y - layer.features[fi].global_y) / scale_factor);
+        vv(((uint32_t)px << 1) ^ (uint32_t)(px >> 31));
+        vv(((uint32_t)py << 1) ^ (uint32_t)(py >> 31));
+    }
+    tmp.push_back(0x13); tmp.push_back(0x02);
+    av(n * 2); av(vdata.size()); tmp.append(vdata);
+
+    // DATA: attribute columns
+    for (size_t c = 0; c < num_attr; ++c) {
+        bool nullable = layer.col_nullable[c];
+        int ctype = layer.col_types[c];
+        std::vector<bool> present(n, true);
+        if (nullable) {
+            for (size_t i = 0; i < n; ++i) {
+                int fi = indices[i];
+                const std::string& v = (c < layer.features[fi].attrs.size()) ? layer.features[fi].attrs[c] : "";
+                present[i] = !v.empty();
+            }
+        }
+        size_t nn = 0;
+        for (size_t i = 0; i < n; ++i) if (present[i]) ++nn;
+
+        if (ctype == MLT_TYPE_INT) {
+            std::string idata;
+            auto iv = [&](uint64_t v) {
+                do { uint8_t b=v&0x7F; v>>=7; if(v) b|=0x80; idata.push_back(b); } while(v);
+            };
+            for (size_t i = 0; i < n; ++i) {
+                if (!present[i]) continue;
+                int fi = indices[i];
+                const std::string& s = (c < layer.features[fi].attrs.size()) ? layer.features[fi].attrs[c] : "0";
+                int64_t val = 0; try { val = std::stoll(s); } catch (...) {}
+                iv(((uint64_t)val << 1) ^ (uint64_t)(val >> 63));
+            }
+            if (nullable) {
+                std::string rle = encode_bool_rle_pyr(present);
+                tmp.push_back(0x00); tmp.push_back(0x02); av(n); av(rle.size()); tmp.append(rle);
+            }
+            tmp.push_back(0x10); tmp.push_back(0x02); av(nn); av(idata.size()); tmp.append(idata);
+        } else if (ctype == MLT_TYPE_FLOAT) {
+            std::string fdata;
+            for (size_t i = 0; i < n; ++i) {
+                if (!present[i]) continue;
+                int fi = indices[i];
+                const std::string& s = (c < layer.features[fi].attrs.size()) ? layer.features[fi].attrs[c] : "0";
+                float val = 0.0f; try { val = std::stof(s); } catch (...) {}
+                uint32_t bits; memcpy(&bits, &val, 4);
+                fdata.push_back(bits&0xFF); fdata.push_back((bits>>8)&0xFF);
+                fdata.push_back((bits>>16)&0xFF); fdata.push_back((bits>>24)&0xFF);
+            }
+            if (nullable) {
+                std::string rle = encode_bool_rle_pyr(present);
+                tmp.push_back(0x00); tmp.push_back(0x02); av(n); av(rle.size()); tmp.append(rle);
+            }
+            tmp.push_back(0x10); tmp.push_back(0x00); av(nn); av(fdata.size()); tmp.append(fdata);
+        } else { // STRING
+            std::string ldata, sdata;
+            auto lv = [&](uint64_t v) {
+                do { uint8_t b=v&0x7F; v>>=7; if(v) b|=0x80; ldata.push_back(b); } while(v);
+            };
+            for (size_t i = 0; i < n; ++i) {
+                if (!present[i]) continue;
+                int fi = indices[i];
+                const std::string& s = (c < layer.features[fi].attrs.size()) ? layer.features[fi].attrs[c] : "";
+                lv(s.size()); sdata.append(s);
+            }
+            av(nullable ? 3 : 2);
+            if (nullable) {
+                std::string rle = encode_bool_rle_pyr(present);
+                tmp.push_back(0x00); tmp.push_back(0x02); av(n); av(rle.size()); tmp.append(rle);
+            }
+            tmp.push_back(0x30); tmp.push_back(0x02); av(nn); av(ldata.size()); tmp.append(ldata);
+            tmp.push_back(0x10); tmp.push_back(0x00); av(0); av(sdata.size()); tmp.append(sdata);
+        }
+    }
+
+    // Layer wrapper
+    std::string out;
+    auto ov = [&](uint64_t v) {
+        do { uint8_t b=v&0x7F; v>>=7; if(v) b|=0x80; out.push_back(b); } while(v);
+    };
+    ov(1 + tmp.size());
+    out.push_back(1);
+    out.append(tmp);
+    return out;
 }
 
 std::string encode_mvt(const fast_mvt& df, const std::vector<int>& indices, uint8_t z, uint32_t x, uint32_t y, const std::string& layer_name) {
@@ -467,6 +715,48 @@ void get_subset_indices(const fast_mvt& df, uint64_t max_features, uint32_t poin
     std::sort(indices.begin(), indices.end());
 }
 
+void get_subset_indices_mlt(const mlt_layer_pyr& layer, uint64_t max_features, uint32_t point_density_threshold, uint8_t z, uint32_t x, uint32_t y, uint32_t seed, std::vector<int>& indices) {
+    size_t total_points = layer.features.size();
+    indices.clear();
+    indices.reserve(total_points);
+    std::mt19937 rng(seed);
+    if (point_density_threshold > 0) {
+        double scale_factor = pmt_utils::epsg3857_scale_factor(z);
+        double offset_x, offset_y;
+        pmt_utils::tiletoepsg3857(x, y, z, &offset_x, &offset_y);
+        std::unordered_map<uint64_t, std::vector<int>> cell_map;
+        for (size_t i = 0; i < total_points; ++i) {
+            int32_t px = std::round((layer.features[i].global_x - offset_x) / scale_factor);
+            int32_t py = std::round((offset_y - layer.features[i].global_y) / scale_factor);
+            int32_t cell_x = std::max(0, std::min(255, (int)(px / 16.0)));
+            int32_t cell_y = std::max(0, std::min(255, (int)(py / 16.0)));
+            uint64_t cell_id = ((uint64_t)cell_x << 32) | (uint32_t)cell_y;
+            cell_map[cell_id].push_back(i);
+        }
+        for (auto& kv : cell_map) {
+            if (kv.second.size() <= point_density_threshold) {
+                for (int idx : kv.second) indices.push_back(idx);
+            } else {
+                std::vector<int> subset = kv.second;
+                std::shuffle(subset.begin(), subset.end(), rng);
+                for (uint32_t i = 0; i < point_density_threshold; ++i) indices.push_back(subset[i]);
+            }
+        }
+        if (indices.size() <= max_features) {
+            std::sort(indices.begin(), indices.end());
+            return;
+        }
+    } else {
+        indices.resize(total_points);
+        for (size_t i = 0; i < total_points; ++i) indices[i] = i;
+    }
+    if (indices.size() > max_features) {
+        std::shuffle(indices.begin(), indices.end(), rng);
+        indices.resize(max_features);
+    }
+    std::sort(indices.begin(), indices.end());
+}
+
 // Global state for build process
 std::mutex out_mutex;
 int out_fd = -1;
@@ -505,40 +795,97 @@ public:
     }
 };
 
-void builder_worker(PyramidBuilderQueue& queue, 
+void builder_worker(PyramidBuilderQueue& queue,
                     const std::map<uint64_t, pmtiles::entryv3>& next_level_entries,
                     uint64_t max_features_limit, uint64_t max_bytes_limit, uint32_t point_density_threshold, uint8_t tile_type) {
-    
+
     pmtiles::entry_zxy entry(0,0,0,0,0);
     while (queue.get_tile(entry)) {
-        fast_mvt combined_df;
         uint32_t z = entry.z;
         uint32_t x = entry.x;
         uint32_t y = entry.y;
-        
-        std::map<std::string, uint32_t> global_key_map;
-        std::map<std::string, uint32_t> global_val_map;
-        
-        // Fetch 4 children
-        for(int dy=0; dy<2; ++dy) {
-            for(int dx=0; dx<2; ++dx) {
-                uint32_t cz = z + 1;
-                uint32_t cx = 2 * x + dx;
-                uint32_t cy = 2 * y + dy;
-                uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
-                
-                auto it = next_level_entries.find(c_id);
-                if (it != next_level_entries.end()) {
+        uint32_t seed = z * 1000000 + x * 1000 + y;
+        std::vector<int> indices;
+
+        if (tile_type == 0x06) {
+            // --- MLT path ---
+            mlt_layer_pyr combined;
+            bool schema_set = false;
+
+            for (int dy = 0; dy < 2; ++dy) {
+                for (int dx = 0; dx < 2; ++dx) {
+                    uint32_t cz = z + 1, cx = 2*x+dx, cy = 2*y+dy;
+                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
+                    auto it = next_level_entries.find(c_id);
+                    if (it == next_level_entries.end()) continue;
+
                     std::string compressed(it->second.length, '\0');
                     pread(out_fd, &compressed[0], it->second.length, it->second.offset);
-                    
                     std::string uncompressed = gzip_decompress(compressed);
+
+                    mlt_layer_pyr child;
+                    decode_mlt_layer(uncompressed, cz, cx, cy, child);
+
+                    if (!schema_set && !child.features.empty()) {
+                        combined.name = child.name;
+                        combined.extent = child.extent;
+                        combined.col_names = child.col_names;
+                        combined.col_types = child.col_types;
+                        combined.col_nullable = child.col_nullable;
+                        schema_set = true;
+                    }
+                    for (auto& f : child.features)
+                        combined.features.push_back(std::move(f));
+                }
+            }
+
+            if (combined.features.empty()) continue;
+
+            uint64_t current_max = combined.features.size();
+            if (current_max > max_features_limit) current_max = max_features_limit;
+
+            while (current_max > 0) {
+                get_subset_indices_mlt(combined, current_max, point_density_threshold, z, x, y, seed, indices);
+                size_t est = indices.size() * (20 + combined.col_names.size() * 8);
+                if (est <= max_bytes_limit) break;
+                double ratio = (double)max_bytes_limit / est;
+                uint64_t next_max = (uint64_t)(current_max * ratio * 0.95);
+                if (next_max >= current_max) current_max--;
+                else current_max = next_max;
+            }
+
+            if (current_max > 0) {
+                std::string encoded = encode_mlt_layer(combined, indices, z, x, y);
+                std::string compressed = gzip_compress(encoded);
+                std::lock_guard<std::mutex> lock(out_mutex);
+                pwrite(out_fd, compressed.data(), compressed.size(), current_out_offset);
+                uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
+                final_entries.emplace_back(tile_id, current_out_offset, compressed.size(), 1);
+                current_out_offset += compressed.size();
+            }
+
+        } else {
+            // --- MVT path ---
+            fast_mvt combined_df;
+            std::map<std::string, uint32_t> global_key_map;
+            std::map<std::string, uint32_t> global_val_map;
+
+            for (int dy = 0; dy < 2; ++dy) {
+                for (int dx = 0; dx < 2; ++dx) {
+                    uint32_t cz = z + 1, cx = 2*x+dx, cy = 2*y+dy;
+                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
+                    auto it = next_level_entries.find(c_id);
+                    if (it == next_level_entries.end()) continue;
+
+                    std::string compressed(it->second.length, '\0');
+                    pread(out_fd, &compressed[0], it->second.length, it->second.offset);
+                    std::string uncompressed = gzip_decompress(compressed);
+
                     fast_mvt child_mvt;
-                    if (tile_type == 0x06) decode_mlt_raw(uncompressed, cz, cx, cy, child_mvt);
-                    else decode_mvt_raw(uncompressed, cz, cx, cy, child_mvt);
-                    
+                    decode_mvt_raw(uncompressed, cz, cx, cy, child_mvt);
+
                     std::vector<uint32_t> k_remap(child_mvt.keys.size());
-                    for(size_t i=0; i<child_mvt.keys.size(); ++i) {
+                    for (size_t i = 0; i < child_mvt.keys.size(); ++i) {
                         auto gk = global_key_map.find(child_mvt.keys[i]);
                         if (gk == global_key_map.end()) {
                             k_remap[i] = combined_df.keys.size();
@@ -548,9 +895,8 @@ void builder_worker(PyramidBuilderQueue& queue,
                             k_remap[i] = gk->second;
                         }
                     }
-                    
                     std::vector<uint32_t> v_remap(child_mvt.values.size());
-                    for(size_t i=0; i<child_mvt.values.size(); ++i) {
+                    for (size_t i = 0; i < child_mvt.values.size(); ++i) {
                         auto gv = global_val_map.find(child_mvt.values[i]);
                         if (gv == global_val_map.end()) {
                             v_remap[i] = combined_df.values.size();
@@ -560,59 +906,40 @@ void builder_worker(PyramidBuilderQueue& queue,
                             v_remap[i] = gv->second;
                         }
                     }
-                    
-                    for(auto& f : child_mvt.features) {
-                        for(size_t t=0; t<f.tags.size(); t+=2) {
-                            f.tags[t] = k_remap[f.tags[t]];
+                    for (auto& f : child_mvt.features) {
+                        for (size_t t = 0; t < f.tags.size(); t += 2) {
+                            f.tags[t]   = k_remap[f.tags[t]];
                             f.tags[t+1] = v_remap[f.tags[t+1]];
                         }
                         combined_df.features.push_back(std::move(f));
                     }
                 }
             }
-        }
-        
-        if (combined_df.features.empty()) continue;
-        
-        // iteratively sample down based on estimated uncompressed size
-        uint64_t current_max_features = combined_df.features.size();
-        if (current_max_features > max_features_limit) {
-            current_max_features = max_features_limit;
-        }
-        
-        uint32_t seed = z * 1000000 + x * 1000 + y;
-        std::vector<int> indices;
-        
-        while (current_max_features > 0) {
-            get_subset_indices(combined_df, current_max_features, point_density_threshold, z, x, y, seed, indices);
-            
-            size_t estimated_size = estimate_uncompressed_mvt_size(combined_df, indices, layer_name_global);
-            
-            if (estimated_size <= max_bytes_limit) {
-                break;
-            }
-            
-            double ratio = (double)max_bytes_limit / estimated_size;
-            uint64_t next_max = (uint64_t)(current_max_features * ratio * 0.95);
-            if (next_max >= current_max_features) {
-                current_max_features--;
-            } else {
-                current_max_features = next_max;
-            }
-        }
-        
-        if (current_max_features > 0) {
-            std::string encoded;
-            if (tile_type == 0x06) encoded = encode_mlt_raw(combined_df, indices, z, x, y, layer_name_global);
-            else encoded = encode_mvt(combined_df, indices, z, x, y, layer_name_global);
 
-            std::string final_compressed = gzip_compress(encoded);
-            
-            std::lock_guard<std::mutex> lock(out_mutex);
-            pwrite(out_fd, final_compressed.data(), final_compressed.size(), current_out_offset);
-            uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
-            final_entries.emplace_back(tile_id, current_out_offset, final_compressed.size(), 1);
-            current_out_offset += final_compressed.size();
+            if (combined_df.features.empty()) continue;
+
+            uint64_t current_max_features = combined_df.features.size();
+            if (current_max_features > max_features_limit) current_max_features = max_features_limit;
+
+            while (current_max_features > 0) {
+                get_subset_indices(combined_df, current_max_features, point_density_threshold, z, x, y, seed, indices);
+                size_t estimated_size = estimate_uncompressed_mvt_size(combined_df, indices, layer_name_global);
+                if (estimated_size <= max_bytes_limit) break;
+                double ratio = (double)max_bytes_limit / estimated_size;
+                uint64_t next_max = (uint64_t)(current_max_features * ratio * 0.95);
+                if (next_max >= current_max_features) current_max_features--;
+                else current_max_features = next_max;
+            }
+
+            if (current_max_features > 0) {
+                std::string encoded = encode_mvt(combined_df, indices, z, x, y, layer_name_global);
+                std::string final_compressed = gzip_compress(encoded);
+                std::lock_guard<std::mutex> lock(out_mutex);
+                pwrite(out_fd, final_compressed.data(), final_compressed.size(), current_out_offset);
+                uint64_t tile_id = pmtiles::zxy_to_tileid(z, x, y);
+                final_entries.emplace_back(tile_id, current_out_offset, final_compressed.size(), 1);
+                current_out_offset += final_compressed.size();
+            }
         }
     }
 }
