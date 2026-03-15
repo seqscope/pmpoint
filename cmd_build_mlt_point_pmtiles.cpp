@@ -2,6 +2,7 @@
 #include "pmpoint.h"
 #include "qgenlib/params.h"
 #include "qgenlib/qgen_error.h"
+#include "qgenlib/tsv_reader.h"
 #include "pmt_utils.h"
 #include "ext/PMTiles/pmtiles.hpp"
 
@@ -411,17 +412,28 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
     size_t dot_pos = base_name.find_last_of(".");
     if (dot_pos != std::string::npos) base_name = base_name.substr(0, dot_pos);
 
-    std::ifstream file(in_csv);
-    if (!file.is_open()) error("Could not open input CSV %s", in_csv.c_str());
+    // std::ifstream file(in_csv);
+    // if (!file.is_open()) error("Could not open input CSV %s", in_csv.c_str());
+    tsv_reader tr(in_csv.c_str());
+    if ( delim.size() != 1 )
+        error("Delimiter must be a single character");
+    tr.delimiter = (int)delim[0];
 
-    std::string line;
-    if (!std::getline(file, line)) error("Empty file");
+    // std::string line;
+    // if (!std::getline(file, line)) error("Empty file");
 
     std::vector<std::string> headers;
-    std::stringstream ss(line);
-    std::string token;
-    while(std::getline(ss, token, delimiter)) {
-        headers.push_back(token);
+    // std::stringstream ss(line);
+    // std::string token;
+    // while(std::getline(ss, token, delimiter)) {
+    //     headers.push_back(token);
+    // }
+    if ( tr.read_line() ) {
+        for (int i = 0; i < tr.nfields; ++i) {
+            headers.push_back(tr.str_field_at(i));
+        }
+    } else {
+        error("Empty file or failed to read header");
     }
 
     int col_x = -1;
@@ -453,11 +465,11 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
 
     notice("Reading CSV...");
     const uint32_t extent = 4096;
-    while(std::getline(file, line)) {
-        std::stringstream css(line);
+    uint64_t nlines = 0;
+    while(tr.read_line()) {
         std::vector<std::string> tokens;
-        while(std::getline(css, token, delimiter)) {
-            tokens.push_back(token);
+        for (int i = 0; i < tr.nfields; ++i) {
+            tokens.push_back(tr.str_field_at(i));
         }
         if (tokens.size() <= (size_t)std::max(col_x, col_y)) continue;
 
@@ -492,11 +504,17 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
             min_y = std::min(min_y, y);
             max_x = std::max(max_x, x);
             max_y = std::max(max_y, y);
+            ++nlines;
+            if ( nlines % 1000000 == 0 ) {
+                notice("Read %llu lines, %llu valid points so far...", nlines, point_count);
+            }
 
         } catch(...) {
+            notice("Warning: Skipping line with invalid coordinates: %s", tr.str.s);
             continue;
         }
     }
+    tr.close();
 
     notice("Read %llu valid points into %zu tiles.", point_count, tile_points.size());
 
