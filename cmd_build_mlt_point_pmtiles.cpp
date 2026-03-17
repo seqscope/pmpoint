@@ -118,9 +118,9 @@ class MLTPointEncoder {
     }
 
 public:
-    // col_types:   0=STRING, 1=FLOAT, 2=INT_64
-    // col_nullable: true  → nullable typeCode (21/25/29) + PRESENT stream; DATA holds non-null values only
-    //               false → non-nullable typeCode (20/24/28); DATA holds all values
+    // col_types:   0=STRING, 1=FLOAT, 2=INT_32
+    // col_nullable: true  → nullable typeCode (17/25/29) + PRESENT stream; DATA holds non-null values only
+    //               false → non-nullable typeCode (16/24/28); DATA holds all values
     std::string encode(uint32_t extent, const std::string& layer_name,
                        const std::vector<PointFeature>& features,
                        const std::vector<std::string>& col_names,
@@ -152,12 +152,12 @@ public:
         append_varint(4);
 
         // Attribute columns metadata: typeCode + name
-        // Non-nullable: INT_64=20, FLOAT=24, STRING=28
-        // Nullable:     INT_64=21, FLOAT=25, STRING=29
+        // Non-nullable: INT_32=16, FLOAT=24, STRING=28
+        // Nullable:     INT_32=17, FLOAT=25, STRING=29
         for (size_t c = 0; c < col_names.size(); ++c) {
             int typeCode;
             if (col_types[c] == COL_TYPE_INT)
-                typeCode = col_nullable[c] ? 21 : 20;
+                typeCode = col_nullable[c] ? 17 : 16;
             else if (col_types[c] == COL_TYPE_FLOAT)
                 typeCode = col_nullable[c] ? 25 : 24;
             else
@@ -228,11 +228,11 @@ public:
             }
 
             if (col_types[c] == COL_TYPE_INT) {
-                // INT_64: non-nullable typeCode=20, nullable typeCode=21
+                // INT_32: non-nullable typeCode=16, nullable typeCode=17
                 // hasStreamCount=false: NO numStreams written.
                 // Streams: [PRESENT (if nullable)] + DATA(non-null values only)
 
-                // Encode non-null zigzag+varint int64 values
+                // Encode non-null zigzag+varint int32 values
                 std::string int_data;
                 auto append_int_varint = [&](uint64_t value) {
                     do {
@@ -245,9 +245,9 @@ public:
                 for (size_t i = 0; i < features.size(); ++i) {
                     if (!present[i]) continue;
                     const std::string& s = (c < features[i].attrs.size()) ? features[i].attrs[c] : "";
-                    int64_t val = 0;
-                    try { val = std::stoll(s); } catch (...) {}
-                    uint64_t zigzag = ((uint64_t)val << 1) ^ (uint64_t)(val >> 63);
+                    int32_t val = 0;
+                    try { val = (int32_t)std::stoi(s); } catch (...) {}
+                    uint32_t zigzag = ((uint32_t)val << 1) ^ (uint32_t)(val >> 31);
                     append_int_varint(zigzag);
                 }
 
@@ -571,7 +571,7 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
         max_y = std::max(max_y, cy);
         ++point_count;
         ++nlines;
-        if (nlines % 1000000 == 0)
+        if (nlines % 10000000 == 0)
             notice("Read %llu lines, %llu valid points, %zu tiles so far...",
                    nlines, point_count, tile_infos.size());
     }
