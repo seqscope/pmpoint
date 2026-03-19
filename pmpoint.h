@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cassert>
 
+int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char** argv);
+
 #include "qgenlib/params.h"
 #include "qgenlib/qgen_error.h"
 #include "qgenlib/hts_utils.h"

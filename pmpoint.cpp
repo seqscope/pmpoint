@@ -25,6 +25,7 @@ int32_t main(int32_t argc, char **argv)
   LONG_COMMAND("export-polygon", &cmd_export_polygon_pmtiles, "Extract polygons from a PMTIles file")
   LONG_COMMAND("count-tiles", &cmd_count_tiles, "Count number of points in each tiles from a PMTiles file")
   LONG_COMMAND("build-pyramid-pmtiles", &cmd_build_pyramid_pmtiles, "Build a pyramidally structured PMTiles file based on lower zoom levels")
+  LONG_COMMAND("build-mlt-point-pmtiles", &cmd_build_mlt_point_pmtiles, "Build a multi-layer tiled PMTiles file based on lower zoom levels") // Added command
   END_LONG_COMMANDS();
 
   cl.Add(new longCommands("Available Commands", longCommandlines));
