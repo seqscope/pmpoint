@@ -925,7 +925,7 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     int32_t max_tile_bytes = 500000;
     int32_t max_tile_features = 50000;
     int32_t num_threads = 0;
-    double scale_factor_compression = 5.0;
+    double scale_factor_compression = 10.0;
     int32_t est_bytes_per_column = 8;
     int32_t est_offset_per_point = 20;
 
