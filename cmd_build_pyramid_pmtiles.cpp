@@ -799,7 +799,8 @@ struct parent_tile_data {
 void builder_worker_pass1(PyramidBuilderQueue& queue,
                           const std::map<uint64_t, pmtiles::entryv3>& next_level_entries,
                           uint8_t tile_type,
-                          std::vector<parent_tile_data>& results, std::mutex& results_mutex) {
+                          std::vector<parent_tile_data>& results, std::mutex& results_mutex,
+                          int32_t scale_factor_compression, int32_t est_offset_per_point, int32_t est_bytes_per_column) {
 
     pmtiles::entry_zxy entry(0,0,0,0,0);
     while (queue.get_tile(entry)) {
@@ -843,7 +844,7 @@ void builder_worker_pass1(PyramidBuilderQueue& queue,
 
             // Record raw combined feature count and estimated size
             ptd.post_density_count = ptd.mlt_combined.features.size();
-            ptd.estimated_uncompressed = ptd.post_density_count * (20 + ptd.mlt_combined.col_names.size() * 8);
+            ptd.estimated_uncompressed = ptd.post_density_count * (est_offset_per_point + ptd.mlt_combined.col_names.size() * est_bytes_per_column);
 
         } else {
             std::map<std::string, uint32_t> global_key_map;
@@ -904,7 +905,7 @@ void builder_worker_pass1(PyramidBuilderQueue& queue,
                     avg_tags += ptd.mvt_combined.features[i].tags.size();
                 avg_tags = avg_tags / std::min((size_t)100, ptd.mvt_combined.features.size());
             }
-            ptd.estimated_uncompressed = ptd.post_density_count * (20 + avg_tags * 4);
+            ptd.estimated_uncompressed = ptd.post_density_count * (est_offset_per_point + avg_tags * est_bytes_per_column);
         }
 
         {
@@ -924,6 +925,9 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     int32_t max_tile_bytes = 500000;
     int32_t max_tile_features = 50000;
     int32_t num_threads = 0;
+    double scale_factor_compression = 5.0;
+    int32_t est_bytes_per_column = 8;
+    int32_t est_offset_per_point = 20;
 
     paramList pl;
     BEGIN_LONG_PARAMS(longParameters)
@@ -934,6 +938,10 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
     LONG_INT_PARAM("max-tile-features", &max_tile_features, "Maximum features per tile")
     LONG_STRING_PARAM("tmp-dir", &tmp_dir, "Temporary directory for tile data")
     LONG_INT_PARAM("threads", &num_threads, "Number of threads")
+    LONG_DOUBLE_PARAM("scale-factor-compression", &scale_factor_compression, "Compression aggressiveness (higher means smaller tiles but more features dropped)")
+    LONG_INT_PARAM("est-bytes-per-column", &est_bytes_per_column, "Estimated bytes per column")
+    LONG_INT_PARAM("est-offset-per-point", &est_offset_per_point, "Estimated offset per point")
+
     END_LONG_PARAMS();
 
     pl.Add(new longParams("Available Options", longParameters));
@@ -1067,7 +1075,8 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
             for (int32_t i = 0; i < num_threads; ++i) {
                 threads.emplace_back(builder_worker_pass1, std::ref(queue), std::cref(level_entries),
                                      tile_type,
-                                     std::ref(pass1_results), std::ref(pass1_mutex));
+                                     std::ref(pass1_results), std::ref(pass1_mutex),
+                                     scale_factor_compression, est_offset_per_point, est_bytes_per_column);
             }
             for (auto& t : threads) t.join();
         }
@@ -1088,8 +1097,8 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
 
         // Ratio from byte size constraint (estimate ~4x gzip compression)
         double ratio_bytes = 1.0;
-        if (max_estimated_uncompressed > (size_t)max_tile_bytes * 4) {
-            ratio_bytes = (double)((size_t)max_tile_bytes * 4) / max_estimated_uncompressed;
+        if (max_estimated_uncompressed > (size_t)max_tile_bytes * scale_factor_compression) {
+            ratio_bytes = (double)((size_t)max_tile_bytes * scale_factor_compression) / max_estimated_uncompressed;
         }
 
         // Use the more restrictive ratio
@@ -1111,7 +1120,8 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                 size_t e = std::min(s + per_thread, n);
                 if (s >= n) break;
                 threads.emplace_back([&pass1_results, s, e, max_tile_features, max_tile_bytes,
-                                      tile_type, level_ratio]() {
+                                      tile_type, level_ratio, scale_factor_compression,
+                                      est_offset_per_point, est_bytes_per_column]() {
                     for (size_t ti = s; ti < e; ++ti) {
                         parent_tile_data& ptd = pass1_results[ti];
                         uint32_t tz = ptd.z, tx = ptd.x, ty = ptd.y;
@@ -1130,9 +1140,9 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                                 current_max = ptd.mlt_combined.features.size();
                             while (current_max > 0) {
                                 get_subset_indices_mlt(ptd.mlt_combined, current_max, seed, indices);
-                                size_t est = indices.size() * (20 + ptd.mlt_combined.col_names.size() * 8);
-                                if (est <= (size_t)max_tile_bytes * 4) break;
-                                double ratio = (double)((size_t)max_tile_bytes * 4) / est;
+                                size_t est = indices.size() * (est_offset_per_point + ptd.mlt_combined.col_names.size() * est_bytes_per_column);
+                                if (est <= (size_t)max_tile_bytes * scale_factor_compression) break;
+                                double ratio = (double)((size_t)max_tile_bytes * scale_factor_compression) / est;
                                 uint64_t next_max = (uint64_t)(current_max * ratio * 0.95);
                                 if (next_max >= current_max) current_max--;
                                 else current_max = next_max;
@@ -1154,8 +1164,8 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                             while (current_max_features > 0) {
                                 get_subset_indices(ptd.mvt_combined, current_max_features, seed, indices);
                                 size_t estimated_size = estimate_uncompressed_mvt_size(ptd.mvt_combined, indices, layer_name_global);
-                                if (estimated_size <= (size_t)max_tile_bytes * 4) break;
-                                double ratio = (double)((size_t)max_tile_bytes * 4) / estimated_size;
+                                if (estimated_size <= (size_t)max_tile_bytes * scale_factor_compression) break;
+                                double ratio = (double)((size_t)max_tile_bytes * scale_factor_compression) / estimated_size;
                                 uint64_t next_max = (uint64_t)(current_max_features * ratio * 0.95);
                                 if (next_max >= current_max_features) current_max_features--;
                                 else current_max_features = next_max;
