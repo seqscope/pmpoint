@@ -119,7 +119,7 @@ void pmt_pts::close()
 void pmt_pts::print_header_info(FILE *fp)
 {
   const char *comp_strs[5] = {"unknown", "none", "gzip", "brotli", "zstd"};
-  const char *ttype_strs[6] = {"unknown", "MVT", "PNG", "JPEG", "WebP", "AVIF"};
+  const char *ttype_strs[7] = {"unknown", "MVT", "PNG", "JPEG", "WebP", "AVIF", "MLT"};
   fprintf(fp, "-----------------------------------------\n");
   fprintf(fp, "Root Directory Offset : %llu\n", hdr.root_dir_offset);
   fprintf(fp, "Root Directory Length : %llu\n", hdr.root_dir_bytes);
@@ -135,7 +135,13 @@ void pmt_pts::print_header_info(FILE *fp)
   fprintf(fp, "Clustered: %s\n", hdr.clustered ? "TRUE" : "FALSE");
   fprintf(fp, "Internal Compression: %s\n", comp_strs[hdr.internal_compression]);
   fprintf(fp, "Tile Compression: %s\n", comp_strs[hdr.tile_compression]);
-  fprintf(fp, "Tile Type: %s\n", ttype_strs[hdr.tile_type]);
+  
+  if (hdr.tile_type < 7) {
+      fprintf(fp, "Tile Type: %s\n", ttype_strs[hdr.tile_type]);
+  } else {
+      fprintf(fp, "Tile Type: unknown (%d)\n", hdr.tile_type);
+  }
+  
   fprintf(fp, "Min Zoom: %u\n", hdr.min_zoom);
   fprintf(fp, "Max Zoom: %u\n", hdr.max_zoom);
   fprintf(fp, "Min X (x10M) : %d\n", hdr.min_lon_e7);
@@ -216,7 +222,7 @@ bool pmt_pts::read_header_meta_entries()
 
   hdr = pmtiles::deserialize_header(hdr_str);
 
-  if (hdr.tile_type != pmtiles::TILETYPE_MVT)
+  if (hdr.tile_type != pmtiles::TILETYPE_MVT && hdr.tile_type != 0x06)
   {
     //error("Unsupported tile type: %d -- Only MVTiles allowed", hdr.tile_type);
     notice("Unsupported tile type: %d", hdr.tile_type);
@@ -262,7 +268,7 @@ bool pmt_pts::read_header_meta_entries()
     tileid2idx[tile_id] = i;
   }
   hdr_read = true;
-  return hdr.tile_type == pmtiles::TILETYPE_MVT;
+  return (hdr.tile_type == pmtiles::TILETYPE_MVT || hdr.tile_type == 0x06);
 }
 
 bool pmt_pts::read_metadata()

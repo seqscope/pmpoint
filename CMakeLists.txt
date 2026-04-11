@@ -83,6 +83,8 @@ set(SOURCE_FILES
     cmd_tile_density_stats_mt.cpp
     cmd_tile_density_stats.cpp
     cmd_count_tiles.cpp
+    cmd_build_pyramid_pmtiles.cpp
+    cmd_build_mlt_point_pmtiles.cpp
     cmd_export_pmtiles.cpp
     cmd_export_polygon_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
@@ -156,7 +158,9 @@ find_package (BZip2)
 if (NOT BZIP2_FOUND)
     message(FATAL_ERROR "libbz2 library not found")
 else()
-    include_directories(${BZIP2_INCLUDE_DIRS})
+    if(NOT APPLE AND NOT BZIP2_INCLUDE_DIRS MATCHES "/usr/include")
+        include_directories(SYSTEM ${BZIP2_INCLUDE_DIRS})
+    endif()
     set(BZIP2 ${BZIP2_LIBRARIES})
 endif()
 
@@ -168,20 +172,30 @@ else()
     set(LZMA ${LZMA_LIBRARIES})
 endif()
 
-set(LIBDEFLATE_LIBRARY "") # Initialize variable
+# --- Find libdeflate dynamically ---
+find_library(DEFLATE_LIBRARY NAMES deflate libdeflate HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/ /opt/homebrew/lib)
 
-if(USE_LIBDEFLATE)
-    find_library(DEFLATELIB_PATH deflate libdeflate.a HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/ ../libdeflate/)
-    if(NOT DEFLATELIB_PATH)
-        message(WARNING "USE_LIBDEFLATE is ON, but libdeflate (libdeflate.a, libdeflate.so, libdeflate.dylib, etc.) was not found. "
-        "If your htslib requires it, linking may fail or you might encounter runtime errors. "
-        "Ensure libdeflate is installed in a standard location, or provide its path via CMAKE_PREFIX_PATH or LIBDEFLATE_DIR (environment variable pointing to the installation prefix).")
-    else()
-        set(DEFLATELIB ${DEFLATELIB_PATH})
-        message(STATUS "Found libdeflate for linking: ${DEFLATELIB}")
-    endif()
+if(DEFLATE_LIBRARY)
+    message(STATUS "Found libdeflate: ${DEFLATE_LIBRARY}")
+else()
+    message(STATUS "libdeflate not found. Skipping.")
+    # Set to empty so target_link_libraries doesn't try to link a "NOTFOUND" variable
+    set(DEFLATE_LIBRARY "") 
 endif()
 
+# set(LIBDEFLATE_LIBRARY "") # Initialize variable
+
+# if(USE_LIBDEFLATE)
+#     find_library(DEFLATELIB_PATH deflate libdeflate.a HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/ ../libdeflate/)
+#     if(NOT DEFLATELIB_PATH)
+#         message(WARNING "USE_LIBDEFLATE is ON, but libdeflate (libdeflate.a, libdeflate.so, libdeflate.dylib, etc.) was not found. "
+#         "If your htslib requires it, linking may fail or you might encounter runtime errors. "
+#         "Ensure libdeflate is installed in a standard location, or provide its path via CMAKE_PREFIX_PATH or LIBDEFLATE_DIR (environment variable pointing to the installation prefix).")
+#     else()
+#         set(DEFLATELIB ${DEFLATELIB_PATH})
+#         message(STATUS "Found libdeflate for linking: ${DEFLATELIB}")
+#     endif()
+# endif()
 
 find_library(CRYPTOLIB crypto HINTS /usr/lib/x86_64-linux-gnu/ /usr/lib/ /usr/lib64/)
 if(NOT CRYPTOLIB)
@@ -197,7 +211,7 @@ endif()
 #TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${DEFLATELIB} ${CRYPTOLIB} "${OpenMP_CXX_FLAGS}")
 #target_compile_options(${APP_EXE} PRIVATE "${OpenMP_CXX_FLAGS}")
 #TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${CRYPTOLIB})
-TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${CRYPTOLIB} ${DEFLATELIB})
+TARGET_LINK_LIBRARIES(${APP_EXE} PRIVATE ${QGEN_LIBRARIES} ${HTS_LIBRARIES} ${ZLIB} ${LZMA} ${BZIP2} ${CURLLIB} ${CRYPTOLIB} ${DEFLATE_LIBRARY})
 target_compile_options(${APP_EXE} PRIVATE)
 
 install(TARGETS ${APP_EXE} RUNTIME DESTINATION bin)
