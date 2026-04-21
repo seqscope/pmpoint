@@ -786,21 +786,21 @@ public:
     }
 };
 
-// Holds decoded parent tile data between pass 1 and pass 2
+// Lightweight metadata collected in pass 1 (no decoded tile data stored)
 struct parent_tile_data {
     uint32_t z, x, y;
-    mlt_layer_pyr mlt_combined;
-    fast_mvt mvt_combined;
     size_t post_density_count;       // raw combined feature count
     size_t estimated_uncompressed;   // estimated uncompressed tile size in bytes
 };
 
-// Pass 1: decode child tiles, combine, record feature counts
+// Pass 1 (lightweight): count features via quick-scan only — no full decode.
+// Estimates uncompressed size from total compressed child bytes * scale factor.
+// This avoids storing any decoded tile data in memory across all parent tiles.
 void builder_worker_pass1(PyramidBuilderQueue& queue,
                           const std::map<uint64_t, pmtiles::entryv3>& next_level_entries,
                           uint8_t tile_type,
                           std::vector<parent_tile_data>& results, std::mutex& results_mutex,
-                          int32_t scale_factor_compression, int32_t est_offset_per_point, int32_t est_bytes_per_column) {
+                          double scale_factor_compression) {
 
     pmtiles::entry_zxy entry(0,0,0,0,0);
     while (queue.get_tile(entry)) {
@@ -811,102 +811,35 @@ void builder_worker_pass1(PyramidBuilderQueue& queue,
         parent_tile_data ptd;
         ptd.z = z; ptd.x = x; ptd.y = y;
         ptd.post_density_count = 0;
+        ptd.estimated_uncompressed = 0;
 
-        if (tile_type == 0x06) {
-            bool schema_set = false;
-            for (int dy = 0; dy < 2; ++dy) {
-                for (int dx = 0; dx < 2; ++dx) {
-                    uint32_t cz = z + 1, cx = 2*x+dx, cy = 2*y+dy;
-                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
-                    auto it = next_level_entries.find(c_id);
-                    if (it == next_level_entries.end()) continue;
+        size_t total_compressed = 0;
 
-                    std::string compressed(it->second.length, '\0');
-                    pread(out_fd, &compressed[0], it->second.length, it->second.offset);
-                    std::string uncompressed = gzip_decompress(compressed);
+        for (int dy = 0; dy < 2; ++dy) {
+            for (int dx = 0; dx < 2; ++dx) {
+                uint32_t cz = z + 1, cx = 2*x+dx, cy = 2*y+dy;
+                uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
+                auto it = next_level_entries.find(c_id);
+                if (it == next_level_entries.end()) continue;
 
-                    mlt_layer_pyr child;
-                    decode_mlt_layer(uncompressed, cz, cx, cy, child);
+                total_compressed += it->second.length;
 
-                    if (!schema_set && !child.features.empty()) {
-                        ptd.mlt_combined.name = child.name;
-                        ptd.mlt_combined.extent = child.extent;
-                        ptd.mlt_combined.col_names = child.col_names;
-                        ptd.mlt_combined.col_types = child.col_types;
-                        ptd.mlt_combined.col_nullable = child.col_nullable;
-                        schema_set = true;
-                    }
-                    for (auto& f : child.features)
-                        ptd.mlt_combined.features.push_back(std::move(f));
-                }
+                std::string compressed(it->second.length, '\0');
+                pread(out_fd, &compressed[0], it->second.length, it->second.offset);
+                std::string uncompressed = gzip_decompress(compressed);
+
+                size_t nf = (tile_type == 0x06)
+                    ? count_mlt_features_quick(uncompressed)
+                    : count_mvt_features_quick(uncompressed);
+                ptd.post_density_count += nf;
             }
-            if (ptd.mlt_combined.features.empty()) continue;
-
-            // Record raw combined feature count and estimated size
-            ptd.post_density_count = ptd.mlt_combined.features.size();
-            ptd.estimated_uncompressed = ptd.post_density_count * (est_offset_per_point + ptd.mlt_combined.col_names.size() * est_bytes_per_column);
-
-        } else {
-            std::map<std::string, uint32_t> global_key_map;
-            std::map<std::string, uint32_t> global_val_map;
-            for (int dy = 0; dy < 2; ++dy) {
-                for (int dx = 0; dx < 2; ++dx) {
-                    uint32_t cz = z + 1, cx = 2*x+dx, cy = 2*y+dy;
-                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
-                    auto it = next_level_entries.find(c_id);
-                    if (it == next_level_entries.end()) continue;
-
-                    std::string compressed(it->second.length, '\0');
-                    pread(out_fd, &compressed[0], it->second.length, it->second.offset);
-                    std::string uncompressed = gzip_decompress(compressed);
-
-                    fast_mvt child_mvt;
-                    decode_mvt_raw(uncompressed, cz, cx, cy, child_mvt);
-
-                    std::vector<uint32_t> k_remap(child_mvt.keys.size());
-                    for (size_t i = 0; i < child_mvt.keys.size(); ++i) {
-                        auto gk = global_key_map.find(child_mvt.keys[i]);
-                        if (gk == global_key_map.end()) {
-                            k_remap[i] = ptd.mvt_combined.keys.size();
-                            global_key_map[child_mvt.keys[i]] = k_remap[i];
-                            ptd.mvt_combined.keys.push_back(child_mvt.keys[i]);
-                        } else {
-                            k_remap[i] = gk->second;
-                        }
-                    }
-                    std::vector<uint32_t> v_remap(child_mvt.values.size());
-                    for (size_t i = 0; i < child_mvt.values.size(); ++i) {
-                        auto gv = global_val_map.find(child_mvt.values[i]);
-                        if (gv == global_val_map.end()) {
-                            v_remap[i] = ptd.mvt_combined.values.size();
-                            global_val_map[child_mvt.values[i]] = v_remap[i];
-                            ptd.mvt_combined.values.push_back(child_mvt.values[i]);
-                        } else {
-                            v_remap[i] = gv->second;
-                        }
-                    }
-                    for (auto& f : child_mvt.features) {
-                        for (size_t t = 0; t < f.tags.size(); t += 2) {
-                            f.tags[t]   = k_remap[f.tags[t]];
-                            f.tags[t+1] = v_remap[f.tags[t+1]];
-                        }
-                        ptd.mvt_combined.features.push_back(std::move(f));
-                    }
-                }
-            }
-            if (ptd.mvt_combined.features.empty()) continue;
-
-            // Record raw combined feature count and estimated size
-            ptd.post_density_count = ptd.mvt_combined.features.size();
-            // Estimate: each feature ~20 bytes geometry + tags overhead
-            size_t avg_tags = 0;
-            if (!ptd.mvt_combined.features.empty()) {
-                for (size_t i = 0; i < std::min((size_t)100, ptd.mvt_combined.features.size()); ++i)
-                    avg_tags += ptd.mvt_combined.features[i].tags.size();
-                avg_tags = avg_tags / std::min((size_t)100, ptd.mvt_combined.features.size());
-            }
-            ptd.estimated_uncompressed = ptd.post_density_count * (est_offset_per_point + avg_tags * est_bytes_per_column);
         }
+
+        if (ptd.post_density_count == 0) continue;
+
+        // Estimate uncompressed size: compressed child bytes * compression ratio.
+        // scale_factor_compression approximates the compression ratio (default 10x).
+        ptd.estimated_uncompressed = (size_t)(total_compressed * scale_factor_compression);
 
         {
             std::lock_guard<std::mutex> lock(results_mutex);
@@ -1061,7 +994,7 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
             }
         }
 
-        // === Pass 1: Decode all parent tiles, combine children, record raw feature counts ===
+        // === Pass 1 (lightweight): quick-count features, estimate sizes — no full decode ===
         std::vector<parent_tile_data> pass1_results;
         std::mutex pass1_mutex;
         {
@@ -1076,7 +1009,7 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                 threads.emplace_back(builder_worker_pass1, std::ref(queue), std::cref(level_entries),
                                      tile_type,
                                      std::ref(pass1_results), std::ref(pass1_mutex),
-                                     scale_factor_compression, est_offset_per_point, est_bytes_per_column);
+                                     scale_factor_compression);
             }
             for (auto& t : threads) t.join();
         }
@@ -1107,10 +1040,11 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                z, pass1_results.size(), max_raw_count, max_estimated_uncompressed,
                ratio_features, ratio_bytes, level_ratio);
 
-        // === Pass 2: encode ALL tiles with level_ratio applied uniformly ===
-        // Every tile is subsampled: keep = level_ratio * tile_feature_count
-        // This ensures uniform subsampling across all tiles at this level
+        // === Pass 2 (streaming): decode + subsample + encode one tile at a time ===
+        // Each thread decodes its tile's children, subsamples, encodes, writes, then frees.
+        // At most num_threads * 4 child tiles are ever decoded in memory simultaneously.
         size_t level_total_features = 0;
+        std::map<uint64_t, pmtiles::entryv3> new_level_entries;
         {
             std::vector<std::thread> threads;
             size_t n = pass1_results.size();
@@ -1119,11 +1053,12 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                 size_t s = i * per_thread;
                 size_t e = std::min(s + per_thread, n);
                 if (s >= n) break;
-                threads.emplace_back([&pass1_results, s, e, max_tile_features, max_tile_bytes,
+                threads.emplace_back([&pass1_results, &level_entries, &new_level_entries,
+                                      s, e, max_tile_bytes,
                                       tile_type, level_ratio, scale_factor_compression,
                                       est_offset_per_point, est_bytes_per_column]() {
                     for (size_t ti = s; ti < e; ++ti) {
-                        parent_tile_data& ptd = pass1_results[ti];
+                        const parent_tile_data& ptd = pass1_results[ti];
                         uint32_t tz = ptd.z, tx = ptd.x, ty = ptd.y;
                         uint32_t seed = tz * 1000000 + tx * 1000 + ty;
                         std::vector<int> indices;
@@ -1134,13 +1069,40 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                         if (tile_cap < 1 && ptd.post_density_count > 0) tile_cap = 1;
 
                         if (tile_type == 0x06) {
-                            if (ptd.mlt_combined.features.empty()) continue;
+                            // Decode child tiles inline — memory freed at end of this block
+                            mlt_layer_pyr combined;
+                            bool schema_set = false;
+                            for (int dy = 0; dy < 2; ++dy) {
+                                for (int dx = 0; dx < 2; ++dx) {
+                                    uint32_t cz = tz+1, cx = 2*tx+dx, cy = 2*ty+dy;
+                                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
+                                    auto it = level_entries.find(c_id);
+                                    if (it == level_entries.end()) continue;
+                                    std::string comp(it->second.length, '\0');
+                                    pread(out_fd, &comp[0], it->second.length, it->second.offset);
+                                    std::string uncomp = gzip_decompress(comp);
+                                    mlt_layer_pyr child;
+                                    decode_mlt_layer(uncomp, cz, cx, cy, child);
+                                    if (!schema_set && !child.features.empty()) {
+                                        combined.name = child.name;
+                                        combined.extent = child.extent;
+                                        combined.col_names = child.col_names;
+                                        combined.col_types = child.col_types;
+                                        combined.col_nullable = child.col_nullable;
+                                        schema_set = true;
+                                    }
+                                    for (auto& f : child.features)
+                                        combined.features.push_back(std::move(f));
+                                }
+                            }
+                            if (combined.features.empty()) continue;
+
                             uint64_t current_max = tile_cap;
-                            if (current_max > ptd.mlt_combined.features.size())
-                                current_max = ptd.mlt_combined.features.size();
+                            if (current_max > combined.features.size())
+                                current_max = combined.features.size();
                             while (current_max > 0) {
-                                get_subset_indices_mlt(ptd.mlt_combined, current_max, seed, indices);
-                                size_t est = indices.size() * (est_offset_per_point + ptd.mlt_combined.col_names.size() * est_bytes_per_column);
+                                get_subset_indices_mlt(combined, current_max, seed, indices);
+                                size_t est = indices.size() * (est_offset_per_point + combined.col_names.size() * est_bytes_per_column);
                                 if (est <= (size_t)max_tile_bytes * scale_factor_compression) break;
                                 double ratio = (double)((size_t)max_tile_bytes * scale_factor_compression) / est;
                                 uint64_t next_max = (uint64_t)(current_max * ratio * 0.95);
@@ -1148,22 +1110,67 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                                 else current_max = next_max;
                             }
                             if (current_max > 0 && !indices.empty()) {
-                                std::string encoded = encode_mlt_layer(ptd.mlt_combined, indices, tz, tx, ty);
+                                std::string encoded = encode_mlt_layer(combined, indices, tz, tx, ty);
                                 std::string compressed = gzip_compress(encoded);
                                 std::lock_guard<std::mutex> lock(out_mutex);
                                 pwrite(out_fd, compressed.data(), compressed.size(), current_out_offset);
-                                final_entries.emplace_back(tile_id, current_out_offset, compressed.size(), 1);
+                                pmtiles::entryv3 new_entry(tile_id, current_out_offset, compressed.size(), 1);
+                                final_entries.push_back(new_entry);
+                                new_level_entries[tile_id] = new_entry;
                                 tile_feature_counts[tile_id] = indices.size();
                                 current_out_offset += compressed.size();
                             }
+                            // combined goes out of scope here — memory freed immediately
                         } else {
-                            if (ptd.mvt_combined.features.empty()) continue;
+                            // Decode child tiles inline — memory freed at end of this block
+                            fast_mvt combined;
+                            std::map<std::string, uint32_t> global_key_map, global_val_map;
+                            for (int dy = 0; dy < 2; ++dy) {
+                                for (int dx = 0; dx < 2; ++dx) {
+                                    uint32_t cz = tz+1, cx = 2*tx+dx, cy = 2*ty+dy;
+                                    uint64_t c_id = pmtiles::zxy_to_tileid(cz, cx, cy);
+                                    auto it = level_entries.find(c_id);
+                                    if (it == level_entries.end()) continue;
+                                    std::string comp(it->second.length, '\0');
+                                    pread(out_fd, &comp[0], it->second.length, it->second.offset);
+                                    std::string uncomp = gzip_decompress(comp);
+                                    fast_mvt child;
+                                    decode_mvt_raw(uncomp, cz, cx, cy, child);
+                                    std::vector<uint32_t> k_remap(child.keys.size());
+                                    for (size_t i = 0; i < child.keys.size(); ++i) {
+                                        auto gk = global_key_map.find(child.keys[i]);
+                                        if (gk == global_key_map.end()) {
+                                            k_remap[i] = combined.keys.size();
+                                            global_key_map[child.keys[i]] = k_remap[i];
+                                            combined.keys.push_back(child.keys[i]);
+                                        } else k_remap[i] = gk->second;
+                                    }
+                                    std::vector<uint32_t> v_remap(child.values.size());
+                                    for (size_t i = 0; i < child.values.size(); ++i) {
+                                        auto gv = global_val_map.find(child.values[i]);
+                                        if (gv == global_val_map.end()) {
+                                            v_remap[i] = combined.values.size();
+                                            global_val_map[child.values[i]] = v_remap[i];
+                                            combined.values.push_back(child.values[i]);
+                                        } else v_remap[i] = gv->second;
+                                    }
+                                    for (auto& f : child.features) {
+                                        for (size_t t = 0; t < f.tags.size(); t += 2) {
+                                            f.tags[t]   = k_remap[f.tags[t]];
+                                            f.tags[t+1] = v_remap[f.tags[t+1]];
+                                        }
+                                        combined.features.push_back(std::move(f));
+                                    }
+                                }
+                            }
+                            if (combined.features.empty()) continue;
+
                             uint64_t current_max_features = tile_cap;
-                            if (current_max_features > ptd.mvt_combined.features.size())
-                                current_max_features = ptd.mvt_combined.features.size();
+                            if (current_max_features > combined.features.size())
+                                current_max_features = combined.features.size();
                             while (current_max_features > 0) {
-                                get_subset_indices(ptd.mvt_combined, current_max_features, seed, indices);
-                                size_t estimated_size = estimate_uncompressed_mvt_size(ptd.mvt_combined, indices, layer_name_global);
+                                get_subset_indices(combined, current_max_features, seed, indices);
+                                size_t estimated_size = estimate_uncompressed_mvt_size(combined, indices, layer_name_global);
                                 if (estimated_size <= (size_t)max_tile_bytes * scale_factor_compression) break;
                                 double ratio = (double)((size_t)max_tile_bytes * scale_factor_compression) / estimated_size;
                                 uint64_t next_max = (uint64_t)(current_max_features * ratio * 0.95);
@@ -1171,14 +1178,17 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                                 else current_max_features = next_max;
                             }
                             if (current_max_features > 0 && !indices.empty()) {
-                                std::string encoded = encode_mvt(ptd.mvt_combined, indices, tz, tx, ty, layer_name_global);
+                                std::string encoded = encode_mvt(combined, indices, tz, tx, ty, layer_name_global);
                                 std::string final_compressed = gzip_compress(encoded);
                                 std::lock_guard<std::mutex> lock(out_mutex);
                                 pwrite(out_fd, final_compressed.data(), final_compressed.size(), current_out_offset);
-                                final_entries.emplace_back(tile_id, current_out_offset, final_compressed.size(), 1);
+                                pmtiles::entryv3 new_entry(tile_id, current_out_offset, final_compressed.size(), 1);
+                                final_entries.push_back(new_entry);
+                                new_level_entries[tile_id] = new_entry;
                                 tile_feature_counts[tile_id] = indices.size();
                                 current_out_offset += final_compressed.size();
                             }
+                            // combined goes out of scope here — memory freed immediately
                         }
                     }
                 });
@@ -1195,14 +1205,8 @@ int32_t cmd_build_pyramid_pmtiles(int32_t argc, char **argv)
                z, pass1_results.size(), level_total_features, level_ratio, max_raw_count, z_max,
                zmax_total_features > 0 ? (double)level_total_features / zmax_total_features : 0.0);
 
-        // update level_entries
-        level_entries.clear();
-        for (const auto& e : final_entries) {
-            pmtiles::zxy co = pmtiles::tileid_to_zxy(e.tile_id);
-            if (co.z == z) {
-                level_entries[e.tile_id] = e;
-            }
-        }
+        // Update level_entries directly from pass2 output — no need to scan all final_entries
+        level_entries = std::move(new_level_entries);
     }
 
     notice("Sorting directory...");

@@ -26,6 +26,9 @@
 #include <atomic>
 #include <algorithm>
 
+#include "ext/protozero/pbf_writer.hpp"
+#include "ext/mapbox/vector_tile/vector_tile_config.hpp"
+
 std::string mlt_gzip_compress(const std::string& data) {
     z_stream zs;
     memset(&zs, 0, sizeof(zs));
@@ -377,7 +380,126 @@ public:
     }
 };
 
-int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
+// MVT (Mapbox Vector Tile) encoder using protozero
+// Follows the Mapbox Vector Tile Specification v2:
+//   https://github.com/mapbox/vector-tile-spec/tree/master/2.1
+std::string encode_mvt_tile(uint32_t extent, const std::string& layer_name,
+                            const std::vector<PointFeature>& features,
+                            const std::vector<std::string>& col_names,
+                            const std::vector<int>& col_types,
+                            const std::vector<bool>& col_nullable) {
+    namespace vt = mapbox::vector_tile;
+
+    // --- Build key table (one entry per attribute column) ---
+    // Keys are simply the column names in order; key index == column index.
+
+    // --- Build value table and per-feature tag arrays ---
+    // A "value" is a typed scalar.  We deduplicate by a canonical string key
+    // so identical values share the same index.
+    struct MVTValue {
+        int    type;       // COL_TYPE_INT / COL_TYPE_FLOAT / COL_TYPE_STRING
+        std::string str_val;
+        int64_t     int_val   = 0;
+        float       float_val = 0.0f;
+    };
+
+    std::unordered_map<std::string, uint32_t> value_index_map;
+    std::vector<MVTValue> values;
+
+    auto get_value_index = [&](int col_type, const std::string& raw) -> uint32_t {
+        std::string canon = std::to_string(col_type) + ":" + raw;
+        auto it = value_index_map.find(canon);
+        if (it != value_index_map.end()) return it->second;
+
+        uint32_t idx = static_cast<uint32_t>(values.size());
+        MVTValue v;
+        v.type    = col_type;
+        v.str_val = raw;
+        if (col_type == COL_TYPE_INT) {
+            try { v.int_val = std::stoll(raw); } catch (...) {}
+        } else if (col_type == COL_TYPE_FLOAT) {
+            try { v.float_val = std::stof(raw); } catch (...) {}
+        }
+        values.push_back(v);
+        value_index_map[canon] = idx;
+        return idx;
+    };
+
+    // Pre-scan: build value table and per-feature tag pairs [key_idx, val_idx, ...]
+    std::vector<std::vector<uint32_t>> feature_tags(features.size());
+    for (size_t i = 0; i < features.size(); ++i) {
+        for (size_t c = 0; c < col_names.size(); ++c) {
+            const std::string& s = (c < features[i].attrs.size()) ? features[i].attrs[c] : "";
+            if (is_missing(s)) continue; // null → omit attribute
+            uint32_t key_idx = static_cast<uint32_t>(c);
+            uint32_t val_idx = get_value_index(col_types[c], s);
+            feature_tags[i].push_back(key_idx);
+            feature_tags[i].push_back(val_idx);
+        }
+    }
+
+    // --- Encode with protozero ---
+    std::string tile_data;
+    protozero::pbf_writer tile_writer(tile_data);
+    {
+        // Tile.layers (field 3) — one layer submessage
+        protozero::pbf_writer layer_writer(tile_writer, vt::LAYERS);
+
+        // Layer.version = 2 (field 15)
+        layer_writer.add_uint32(vt::VERSION, 2);
+
+        // Layer.name (field 1)
+        layer_writer.add_string(vt::NAME, layer_name);
+
+        // Layer.extent (field 5)
+        layer_writer.add_uint32(vt::EXTENT, extent);
+
+        // Layer.keys (field 3, repeated string)
+        for (const auto& key : col_names) {
+            layer_writer.add_string(vt::KEYS, key);
+        }
+
+        // Layer.values (field 4, repeated Value submessage)
+        for (const auto& val : values) {
+            protozero::pbf_writer value_writer(layer_writer, vt::VALUES);
+            if (val.type == COL_TYPE_STRING) {
+                value_writer.add_string(vt::STRING, val.str_val);
+            } else if (val.type == COL_TYPE_FLOAT) {
+                value_writer.add_float(vt::FLOAT, val.float_val);
+            } else { // COL_TYPE_INT
+                value_writer.add_sint64(vt::SINT, val.int_val);
+            }
+        }
+
+        // Layer.features (field 2, repeated Feature submessage)
+        for (size_t i = 0; i < features.size(); ++i) {
+            protozero::pbf_writer feat_writer(layer_writer, vt::FEATURES);
+
+            // Feature.type = POINT (field 3, enum value 1)
+            feat_writer.add_enum(vt::FeatureType::TYPE, vt::GeomType::POINT);
+
+            // Feature.geometry (field 4, packed uint32)
+            // Point encoding: MoveTo command (id=1, count=1) then zigzag dx, dy
+            uint32_t move_to_cmd = (1u << 3) | 1u; // command_integer(MoveTo, 1)
+            uint32_t zx = protozero::encode_zigzag32(features[i].x);
+            uint32_t zy = protozero::encode_zigzag32(features[i].y);
+            uint32_t geom[3] = { move_to_cmd, zx, zy };
+            feat_writer.add_packed_uint32(vt::FeatureType::GEOMETRY,
+                                           std::begin(geom), std::end(geom));
+
+            // Feature.tags (field 2, packed uint32)
+            if (!feature_tags[i].empty()) {
+                feat_writer.add_packed_uint32(vt::FeatureType::TAGS,
+                                              feature_tags[i].begin(),
+                                              feature_tags[i].end());
+            }
+        }
+    }
+
+    return tile_data;
+}
+
+int32_t cmd_build_point_pmtiles(int32_t argc, char **argv)
 {
     std::string in_csv;
     std::string out_pmtiles;
@@ -386,12 +508,14 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
     std::string colname_x = "X";
     std::string colname_y = "Y";
     std::string delim = ",";
+    std::string format = "MLT"; 
     int32_t n_threads = 1;
 
     paramList pl;
     BEGIN_LONG_PARAMS(longParameters)
     LONG_STRING_PARAM("in", &in_csv, "Input CSV file")
     LONG_STRING_PARAM("out", &out_pmtiles, "Output pyramidal PMTiles file")
+    LONG_STRING_PARAM("format", &format, "Tile encoding format: MLT (MapLibre Tile) or MVT (Mapbox Vector Tile) [default: MLT]")
     LONG_INT_PARAM("zoom", &zoom, "Zoom level to build")
     LONG_STRING_PARAM("colname-x", &colname_x, "Column name for X coordinate (EPSG:3857)")
     LONG_STRING_PARAM("colname-y", &colname_y, "Column name for Y coordinate (EPSG:3857)")
@@ -406,6 +530,8 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
 
     if (in_csv.empty() || out_pmtiles.empty()) error("Missing --in or --out");
     if (delim.size() != 1) error("Delimiter must be a single character");
+    if (format != "MLT" && format != "MVT")
+        error("Unsupported format '%s'. Must be 'MLT' or 'MVT'.", format.c_str());
     if (n_threads < 1) n_threads = 1;
 
     std::string base_name = in_csv;
@@ -668,24 +794,30 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
 
         // Encode + compress in parallel
         std::vector<std::string> batch_compressed(bs);
+        // Encode one tile's features into the chosen format
+        auto encode_tile = [&](const std::vector<PointFeature>& feats) -> std::string {
+            if (format == "MVT") {
+                return encode_mvt_tile(extent, base_name, feats,
+                                       attr_col_names, attr_col_types, attr_col_nullable);
+            } else {
+                MLTPointEncoder enc;
+                return enc.encode(extent, base_name, feats,
+                                  attr_col_names, attr_col_types, attr_col_nullable);
+            }
+        };
         if (n_threads > 1) {
             std::vector<std::thread> threads;
+            threads.reserve(bs);
             for (size_t i = 0; i < bs; ++i) {
                 threads.emplace_back([&, i]() {
-                    MLTPointEncoder enc;
-                    batch_compressed[i] = mlt_gzip_compress(
-                        enc.encode(extent, base_name, batch_data[i],
-                                   attr_col_names, attr_col_types, attr_col_nullable));
+                    batch_compressed[i] = mlt_gzip_compress(encode_tile(batch_data[i]));
                     std::vector<PointFeature>().swap(batch_data[i]);
                 });
             }
             for (auto& t : threads) t.join();
         } else {
-            MLTPointEncoder enc;
             for (size_t i = 0; i < bs; ++i) {
-                batch_compressed[i] = mlt_gzip_compress(
-                    enc.encode(extent, base_name, batch_data[i],
-                               attr_col_names, attr_col_types, attr_col_nullable));
+                batch_compressed[i] = mlt_gzip_compress(encode_tile(batch_data[i]));
                 std::vector<PointFeature>().swap(batch_data[i]);
             }
         }
@@ -723,9 +855,9 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
     jmeta["name"] = base_name;
     jmeta["type"] = "overlay";
     jmeta["version"] = "2";
-    jmeta["format"] = "pbf"; // To mimic tippecanoe
-    jmeta["description"] = "Generated PMTiles by pmpoint for MLT points";
-    jmeta["generator"] = "pmpoint build-mlt-point-pmtiles";
+    jmeta["format"] = "pbf";
+    jmeta["description"] = std::string("Generated PMTiles by pmpoint for ") + format + " points";
+    jmeta["generator"] = "pmpoint build-point-pmtiles";
 
     nlohmann::json vlayers = nlohmann::json::array();
     nlohmann::json layer1;
@@ -780,7 +912,7 @@ int32_t cmd_build_mlt_point_pmtiles(int32_t argc, char **argv)
     header.clustered = true;
     header.internal_compression = pmtiles::COMPRESSION_GZIP;
     header.tile_compression = pmtiles::COMPRESSION_GZIP;
-    header.tile_type = 0x06; // 0x06 = MapLibre Vector Tile (MLT)
+    header.tile_type = (format == "MVT") ? 0x01 : 0x06; // 0x01 = MVT, 0x06 = MLT
     header.min_zoom = zoom;
     header.max_zoom = zoom;
     header.center_zoom = zoom;

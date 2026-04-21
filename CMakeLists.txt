@@ -84,7 +84,7 @@ set(SOURCE_FILES
     cmd_tile_density_stats.cpp
     cmd_count_tiles.cpp
     cmd_build_pyramid_pmtiles.cpp
-    cmd_build_mlt_point_pmtiles.cpp
+    cmd_build_point_pmtiles.cpp
     cmd_export_pmtiles.cpp
     cmd_export_polygon_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
