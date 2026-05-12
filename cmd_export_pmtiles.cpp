@@ -583,7 +583,9 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
             }
         }
         n_written += df.points.size();
-        notice("Finished writing %zu additional points -- %llu total", df.points.size(), n_written);
+        if ( i % 100 == 0 ) {
+            notice("Finished writing %zu additional points in tile %d / %zu -- %llu points total", df.points.size(), i, pmt.tile_entries.size(), n_written);
+        }
         df.clear_values();
     }
 
