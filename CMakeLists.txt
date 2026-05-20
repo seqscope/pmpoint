@@ -86,6 +86,7 @@ set(SOURCE_FILES
     cmd_build_pyramid_pmtiles.cpp
     cmd_build_point_pmtiles.cpp
     cmd_export_pmtiles.cpp
+    cmd_quadtree_test_pmtiles.cpp
     cmd_export_polygon_pmtiles.cpp
     cmd_summarize_pmtiles.cpp
     flex_io.h
