@@ -235,10 +235,13 @@ static void decode_mlt_tile_to_df(const std::string& tile_buf, uint8_t zoom,
                 if (!found) continue;
             }
             pmt_utils::pmt_pt_t pt(zoom, gx, gy);
-            df.points.push_back(pt);
+            df.points.push_back(pt); // add point to dataframe
             for (size_t c = 0; c < num_attr; ++c) {
                 const std::string& v = attr_vals[c][i];
-                df.add_feature((int32_t)c, col_metas[c+1].name, v.empty() ? "NA" : v);
+                //df.add_feature((int32_t)c, col_metas[c+1].name, v.empty() ? "NA" : v);
+                if (!v.empty()) {
+                    df.add_feature(col_metas[c + 1].name, v);
+                }
             }
         }
 
@@ -269,6 +272,9 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
     std::string out_jsonf;
 
     int32_t precision = 3; // precision of the output
+    std::string missing_value_str = "NA"; // string to represent missing values in the output
+    std::vector<std::string> priority_feature_names; // feature names to prioritize in the output (appear first)
+    bool skip_priority_feature = false; // whether to skip priority features in the output if they are missing in the input
 
     paramList pl;
 
@@ -290,6 +296,9 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
 
     LONG_PARAM_GROUP("Additional options", NULL)
     LONG_INT_PARAM("precision", &precision, "Precision of the output of X/Y coordinates (default: 3)")
+    LONG_STRING_PARAM("missing-value", &missing_value_str, "String to represent missing values in the output (default: NA)")
+    LONG_MULTI_STRING_PARAM("priority-feature", &priority_feature_names, "Feature name to prioritize in the output (default: gene, count)")
+    LONG_PARAM("skip-priority-feature", &skip_priority_feature, "Skip priority features in the output if they are missing in the input (default: false)")
     END_LONG_PARAMS();
 
     pl.Add(new longParams("Available Options", longParameters));
@@ -305,6 +314,11 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
     if (out_tsvf.empty() && out_jsonf.empty())
     {
         error("Missing required options --out-tsv or --out-json (at least 1 required)");
+    }
+
+    if ( priority_feature_names.empty() && !skip_priority_feature ) {
+        priority_feature_names.push_back("gene");
+        priority_feature_names.push_back("count");
     }
 
     // Open a PMTiles file
@@ -529,6 +543,39 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
 
         if (tsv_wh != NULL)
         {
+            // sort the feature names to ensure consistent column order
+            std::vector< std::pair<std::string, int32_t> > sorted_features;
+            for (int32_t i = 0; i < df.feature_names.size(); ++i)
+            {
+                sorted_features.push_back(std::make_pair(df.feature_names[i], i));
+            }
+            std::sort(sorted_features.begin(), sorted_features.end());
+            std::vector<int32_t> sorted_indices;
+            // add priority features first
+            for (int32_t i = 0; i < priority_feature_names.size(); ++i) {
+                std::map<std::string, int32_t>::iterator it = df.feature_name_to_idx.find(priority_feature_names[i]);
+                if (it != df.feature_name_to_idx.end()) {
+                    sorted_indices.push_back(it->second);
+                }
+            }
+            for (int32_t i = 0; i < sorted_features.size(); ++i) {
+                // check if the feature is already added as a priority feature
+                bool is_priority = false;
+                for (int32_t j = 0; j < priority_feature_names.size(); ++j) {
+                    if (sorted_features[i].first == priority_feature_names[j]) {
+                        is_priority = true;
+                        break;
+                    }
+                }
+                if (!is_priority) {
+                    sorted_indices.push_back(sorted_features[i].second);
+                }
+            }
+
+            if ( sorted_indices.size() != df.feature_names.size() ) {
+                error("Internal error: sorted_indices size does not match feature_names size");
+            }
+
             if (!tsv_hdr_written)
             {
                 if (df.points.size() > 0)
@@ -538,7 +585,8 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
                         hprintf(tsv_wh, "X\tY");
                         for (int32_t i = 0; i < df.feature_names.size(); ++i)
                         {
-                            hprintf(tsv_wh, "\t%s", df.feature_names[i].c_str());
+                            //hprintf(tsv_wh, "\t%s", df.feature_names[i].c_str());
+                            hprintf(tsv_wh, "\t%s", df.feature_names[sorted_indices[i]].c_str());
                         }
                         hprintf(tsv_wh, "\n");
                         tsv_hdr_written = true;
@@ -550,7 +598,13 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
                 hprintf(tsv_wh, "%.*f\t%.*f", precision, df.points[i].global_x, precision, df.points[i].global_y);
                 for (int32_t j = 0; j < df.feature_matrix.size(); ++j)
                 {
-                    hprintf(tsv_wh, "\t%s", df.feature_matrix[j][i].c_str());
+                    int32_t idx = sorted_indices[j];
+                    if ( df.feature_matrix[idx].size() < i+1 || df.feature_matrix[idx][i].empty() ) {
+                        hprintf(tsv_wh, "\t%s", missing_value_str.c_str());
+                    }
+                    else {
+                        hprintf(tsv_wh, "\t%s", df.feature_matrix[idx][i].c_str());
+                    }
                 }
                 hprintf(tsv_wh, "\n");
                 if ((n_written + i + 1) % verbose_freq == 0)
@@ -566,13 +620,20 @@ int32_t cmd_export_pmtiles(int32_t argc, char **argv)
                 for (int32_t i = 0; i < df.points.size(); ++i)
                 {
                     hprintf(json_wh, "{\"type\":\"Feature\",\"properties\": {");
+                    bool is_first = true;
                     for (int32_t j = 0; j < df.feature_matrix.size(); ++j)
                     {
-                        hprintf(json_wh, "\"%s\":\"%s\"", df.feature_names[j].c_str(), df.feature_matrix[j][i].c_str());
-                        if (j < df.feature_matrix.size() - 1)
-                        {
-                            hprintf(json_wh, ",");
+                        if ( !df.feature_matrix[j][i].empty() ) {
+                            if (!is_first) {
+                                hprintf(json_wh, ",");
+                            }
+                            hprintf(json_wh, "\"%s\":\"%s\"", df.feature_names[j].c_str(), df.feature_matrix[j][i].c_str());
+                            is_first = false;
                         }
+                        // if (j < df.feature_matrix.size() - 1)
+                        // {
+                        //     hprintf(json_wh, ",");
+                        // }
                     }
                     hprintf(json_wh, "},\"geometry\":{\"type\":\"Point\",\"coordinates\":[%.*f,%.*f]}}\n", precision, df.points[i].global_x, precision, df.points[i].global_y);
                     if ((n_written + i + 1) % verbose_freq == 0)
