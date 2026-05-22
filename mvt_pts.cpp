@@ -222,13 +222,14 @@ bool mvt_pts_filt::decode_points_df(const std::string &_buffer, uint8_t zoom, in
 
                 // obtain properties;
                 auto props = feature.getProperties();
-                int32_t j = 0;
+                //int32_t j = 0;
                 for (auto const &prop : props)
                 {
                     print_value printvisitor;
                     std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
-                    df.add_feature(j, prop.first, value);
-                    ++j;
+                    //df.add_feature(j, prop.first, value);
+                    df.add_feature(prop.first, value);
+                    //++j;
                 }
             }
             //notice("npass = %llu, nskip = %llu", npass, nskip);
@@ -290,13 +291,14 @@ bool mvt_pts::decode_points_df(const std::string &_buffer, uint8_t zoom, int64_t
 
                 // obtain properties;
                 auto props = feature.getProperties();
-                int32_t j = 0;
+                // int32_t j = 0;
                 for (auto const &prop : props)
                 {
                     print_value printvisitor;
                     std::string value = mapbox::util::apply_visitor(printvisitor, prop.second);
-                    df.add_feature(j, prop.first, value);
-                    ++j;
+                    //df.add_feature(j, prop.first, value);
+                    df.add_feature(prop.first, value);
+                    //++j;
                 }
 
                 // snprintf(bufx, sizeof(bufx), "%.3f", x_offset + scale_factor * geom[0][0].x);
