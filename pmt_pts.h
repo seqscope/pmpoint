@@ -37,6 +37,13 @@ public:
     // bool get_tile_entries();      // get the tile entries of a PMTiles file
     //size_t fetch_tile(uint8_t z, uint32_t x, uint32_t y); // fetch the uncompressed tile data of a PMTiles file
     size_t fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::string& buffer); // fetch the uncompressed tile data of a PMTiles file
+    // Thread-safe parallel fetch: read+decompress a tile using a caller-provided reader
+    // (typically a per-thread clone of flex_reader_ptr). Does not touch the shared mutex,
+    // so concurrent calls on independent readers run in parallel. decompress_func is a pure
+    // lambda and safe to call concurrently.
+    size_t fetch_tile_decompress(FlexReader* reader, const pmtiles::entry_zxy& e, std::string& buffer) const;
+    // Create an independent reader to the same source for parallel reads.
+    std::unique_ptr<FlexReader> clone_reader() const { return flex_reader_ptr ? flex_reader_ptr->clone() : nullptr; }
     // uint32_t parse_fetched_tile_as_mvt();                          // parse the fetched tile data as an MVTile object
     void print_header_info(FILE *fp);
     void print_metadata(FILE *fp);

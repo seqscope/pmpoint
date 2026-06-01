@@ -389,3 +389,17 @@ size_t pmt_pts::fetch_tile_to_buffer(uint8_t z, uint32_t x, uint32_t y, std::str
   //return tile_data_str.size();
   return buffer.size();
 }
+
+size_t pmt_pts::fetch_tile_decompress(FlexReader* reader, const pmtiles::entry_zxy& e, std::string& buffer) const
+{
+  // Read the raw (compressed) tile bytes through the caller-provided reader.
+  // No shared mutex is taken here: each worker thread owns its own reader, so
+  // reads proceed in parallel. decompress_func is a pure lambda (no captured
+  // mutable state) and is safe to invoke concurrently.
+  std::string tile_comp_data_str;
+  if (!reader->read_at(e.offset, e.length, tile_comp_data_str) || tile_comp_data_str.size() != e.length) {
+    error("Failed to read tile data at offset %llu with length %u", (unsigned long long)e.offset, e.length);
+  }
+  buffer = decompress_func(tile_comp_data_str, hdr.tile_compression);
+  return buffer.size();
+}
