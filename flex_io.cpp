@@ -1,5 +1,6 @@
 #include "flex_io.h"
 #include "qgenlib/qgen_error.h"
+#include <mutex>
 
 std::unique_ptr<FlexReader> FlexReaderFactory::create_reader(const char* path) {
     std::unique_ptr<FlexReader> reader;
@@ -59,6 +60,14 @@ bool FlexFileReader::read_at(uint64_t offset, uint64_t length, std::string& buff
     return true;
 }
 
+std::unique_ptr<FlexReader> FlexFileReader::clone() const {
+    auto reader = std::make_unique<FlexFileReader>();
+    if (!reader->open(path_.c_str())) {
+        return nullptr;
+    }
+    return reader;
+}
+
 bool FlexHttpReader::parse_head() {
     CURL* c = curl_easy_init();
     if (!c) return false;
@@ -88,13 +97,18 @@ size_t FlexHttpReader::write_to_string(void* p, size_t sz, size_t nm, void* ud) 
 }    
 
 FlexHttpReader::FlexHttpReader() {
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    // curl_global_init is not thread-safe and must be called exactly once for the
+    // whole process. With multiple FlexHttpReader instances (e.g. one per worker
+    // thread), per-instance init/cleanup would race and free shared state while
+    // other handles are still alive. Initialize once; rely on process exit for
+    // global cleanup (standard for a short-lived CLI).
+    static std::once_flag curl_global_once;
+    std::call_once(curl_global_once, []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
     curl_ = curl_easy_init();
 }
 
 FlexHttpReader::~FlexHttpReader() {
     close();
-    curl_global_cleanup();
 }
 
 bool FlexHttpReader::open(const char* uri) {
@@ -150,4 +164,12 @@ bool FlexHttpReader::read_at(uint64_t offset, uint64_t length, std::string& buff
     }
     buffer.clear();
     return false;
+}
+
+std::unique_ptr<FlexReader> FlexHttpReader::clone() const {
+    auto reader = std::make_unique<FlexHttpReader>();
+    if (!reader->open(url_.c_str())) {
+        return nullptr;
+    }
+    return reader;
 }

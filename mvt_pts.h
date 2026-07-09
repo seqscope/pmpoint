@@ -18,6 +18,7 @@ public:
     std::vector<std::string> feature_names;
     std::vector<std::vector<std::string>> feature_matrix;
     std::vector<pmt_utils::pmt_pt_t> points;
+    std::map<std::string, int32_t> feature_name_to_idx;
 
     inline void clear_values()
     {
@@ -28,18 +29,46 @@ public:
         }
     }
 
-    inline void add_feature(int32_t idx, const std::string &name, const std::string &value)
-    {
-        if (idx >= feature_names.size())
-        {
+    // inline void add_feature(int32_t idx, const std::string &name, const std::string &value)
+    // {
+    //     if (idx >= feature_names.size())
+    //     {
+    //         feature_names.push_back(name);
+    //         feature_matrix.resize(feature_names.size());
+    //     }
+    //     else if (feature_names[idx] != name)
+    //     {
+    //         error("Incompatible feature names. %s != %s", feature_names[idx].c_str(), name.c_str());
+    //     }
+    //     feature_matrix[idx].push_back(value);
+    // }
+    inline void add_feature(const std::string &name, const std::string &value) {
+        int32_t idx;
+        std::map<std::string, int32_t>::iterator it = feature_name_to_idx.find(name);
+        int32_t n_points = (int32_t)points.size();
+        if (it == feature_name_to_idx.end()) {  // add new feature
+            notice("Adding new feature %s at index %zu", name.c_str(), feature_names.size());
+            idx = feature_names.size();
             feature_names.push_back(name);
             feature_matrix.resize(feature_names.size());
+            feature_name_to_idx[name] = idx;
+            if (n_points > 1) {
+                //feature_matrix[idx].resize(n_points-1, "NA"); // fill previous rows with NA
+                feature_matrix[idx].resize(n_points-1); // fill previous rows with NA
+            }
+            feature_matrix[idx].push_back(value); // add value for current point
         }
-        else if (feature_names[idx] != name)
-        {
-            error("Incompatible feature names. %s != %s", feature_names[idx].c_str(), name.c_str());
+        else {
+            idx = it->second;
+            if (idx >= feature_names.size() || feature_names[idx] != name) {
+                error("Incompatible feature names. %s != %s", feature_names[idx].c_str(), name.c_str());
+            }
+            if (feature_matrix[idx].size() < n_points - 1) {
+                //feature_matrix[idx].resize(n_points-1, "NA");
+                feature_matrix[idx].resize(n_points-1);
+            }
+            feature_matrix[idx].push_back(value); // add value for current point
         }
-        feature_matrix[idx].push_back(value);
     }
 };
 
