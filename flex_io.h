@@ -16,8 +16,11 @@ public:
     //virtual bool read(uint64_t offset, uint64_t length, std::string& buffer) = 0;
     virtual bool read_at(uint64_t offset, uint64_t length, std::string& buffer) = 0;
     virtual uint64_t size_hint() const { return 0; }
-    virtual bool is_open() const = 0;    
+    virtual bool is_open() const = 0;
     virtual void close() = 0;
+    // Create an independent reader to the same resource (own file handle / own curl handle).
+    // Used to parallelize reads across threads. Returns nullptr on failure.
+    virtual std::unique_ptr<FlexReader> clone() const = 0;
 };
 
 class FlexFileReader : public FlexReader {
@@ -33,6 +36,7 @@ public:
     uint64_t size_hint() const override { return size_; }
     bool is_open() const override { return fp_ != nullptr; }
     void close() override { if ( is_open() ) { fclose(fp_); fp_ = nullptr; } }
+    std::unique_ptr<FlexReader> clone() const override;
 };
 
 class FlexHttpReader : public FlexReader {
@@ -51,6 +55,7 @@ public:
     uint64_t size_hint() const override { return size_; }
     bool is_open() const override { return curl_ != nullptr; }
     void close() override { if ( is_open() ) { curl_easy_cleanup(curl_); curl_ = nullptr; } }
+    std::unique_ptr<FlexReader> clone() const override;
 };
 
 class FlexReaderFactory {
