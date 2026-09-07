@@ -47,7 +47,11 @@ public:
 
     inline bool intersects_rectangle(const Rectangle &r) const
     {
-        return (contains_point(r.p_min) || contains_point(r.p_max) || r.contains_point(p_min) || r.contains_point(p_max));
+        // axis-aligned interval overlap on both axes; the previous corner test
+        // (either rectangle containing the other's p_min or p_max) misses the
+        // "cross" overlap and the off-diagonal tiles around a shared corner
+        return !(r.p_max.x < p_min.x || r.p_min.x > p_max.x ||
+                 r.p_max.y < p_min.y || r.p_min.y > p_max.y);
     }
 };
 
